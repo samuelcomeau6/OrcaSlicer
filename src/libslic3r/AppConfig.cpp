@@ -224,7 +224,7 @@ void AppConfig::set_defaults()
 
     // per-object center of gravity markers in the preview
     if (get("show_objects_cog").empty())
-        set_bool("show_objects_cog", true);
+        set_bool("show_objects_cog", false);
 
 #ifdef _WIN32
 

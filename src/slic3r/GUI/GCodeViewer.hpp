@@ -717,6 +717,11 @@ public:
     // and the wipe tower are left out, so a marker matches the part the user takes off
     // the plate. When no print objects are available (a standalone G-code file loaded in
     // the viewer) a single marker is computed for the whole plate instead.
+    //
+    // Nothing is computed while the preview loads. The markers are built on the first
+    // frame after the user switches them on, which keeps the pass out of the way of
+    // slicing and off the memory peak that comes with it, and costs nothing at all for
+    // the users who never turn the markers on.
     class ObjectsCoG
     {
     public:
@@ -728,7 +733,11 @@ public:
         };
 
         void reset();
-        void load(const GCodeProcessorResult& gcode_result, const Print& print);
+        // discards the markers computed for a previous preview, without computing new ones
+        void invalidate() { m_markers.clear(); m_markers.shrink_to_fit(); m_needs_update = true; }
+        bool needs_update() const { return m_needs_update; }
+        // print may be null, e.g. for a standalone G-code file
+        void load(const GCodeProcessorResult& gcode_result, const Print* print);
         void render();
 
         bool is_visible() const { return m_visible; }
@@ -753,8 +762,11 @@ public:
 
         std::vector<Region> m_regions;
         std::vector<Marker> m_markers;
-        GLModel             m_model;
-        bool                m_visible{ true };
+        // the two interleaved octant sets of the center of gravity symbol
+        GLModel             m_model_dark;
+        GLModel             m_model_light;
+        bool                m_visible{ false };
+        bool                m_needs_update{ true };
     };
 
     enum class EViewType : unsigned char
@@ -953,6 +965,8 @@ private:
     void refresh_render_paths(bool keep_sequential_current_first, bool keep_sequential_current_last) const;
     void render_toolpaths();
     void render_shells(int canvas_width, int canvas_height);
+    // builds the per-object center of gravity markers when they are shown and out of date
+    void update_objects_cog();
 
     //BBS: GUI refactor: add canvas size
     void render_legend(float &legend_height, int canvas_width, int canvas_height, int right_margin);
