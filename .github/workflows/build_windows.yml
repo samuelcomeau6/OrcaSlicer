@@ -1,0 +1,26 @@
+name: Build Windows
+
+# Windows-only build, meant to be started by hand from the Actions tab.
+# "Build all" also builds macOS and Linux, which is a lot of runner time when
+# all you want is a Windows installer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-deps-only:
+        description: 'Only build dependencies (bypasses caching)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_windows:
+    name: Build Windows
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-2022
+      build-deps-only: ${{ inputs.build-deps-only || false }}
+    secrets: inherit
