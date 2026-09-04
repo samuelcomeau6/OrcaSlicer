@@ -824,6 +824,8 @@ private:
     SequentialView m_sequential_view;
     // per-object center of gravity markers
     ObjectsCoG m_objects_cog;
+    // set while load() runs, so the deferred marker update stays out of its gcode result lock
+    bool m_objects_cog_loading{ false };
     IMSlider* m_moves_slider;
     IMSlider* m_layers_slider;
     Shells m_shells;

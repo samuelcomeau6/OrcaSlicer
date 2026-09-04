@@ -909,7 +909,7 @@ void GCodeViewer::update_objects_cog()
 {
     // load() pumps the event loop through its progress dialog, so a paint can land in the
     // middle of it. It holds the gcode result lock, which is not recursive: stay out
-    if (m_loading)
+    if (m_objects_cog_loading)
         return;
     if (!m_objects_cog.is_visible() || !m_objects_cog.needs_update())
         return;
@@ -1301,6 +1301,12 @@ void GCodeViewer::load(const GCodeProcessorResult& gcode_result, const Print& pr
 
    //BBS: add logs
   BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": gcode result %1%, new id %2%, gcode file %3% ") % (&gcode_result) % m_last_result_id % gcode_result.filename;
+
+   // this holds the gcode result lock below while its progress dialog pumps the event
+   // loop, so a paint can land in the middle of it. The lock is not recursive, so the
+   // deferred center of gravity update has to stay out until this returns
+   m_objects_cog_loading = true;
+   ScopeGuard cog_loading_guard([this]() { m_objects_cog_loading = false; });
 
    // release gpu memory, if used
    reset();
