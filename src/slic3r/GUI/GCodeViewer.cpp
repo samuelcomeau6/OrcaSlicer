@@ -4778,6 +4778,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
         Circle,
         Hexagon,
         Line,
+        CoG,
         None
     };
 
@@ -4833,9 +4834,25 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
         case EItemType::Line: {
             draw_list->AddLine({ pos.x + 1, pos.y + icon_size + 2 }, { pos.x + icon_size - 1, pos.y + 4 }, ImGuiWrapper::to_ImU32(color), 3.0f);
             break;
-        case EItemType::None:
+        }
+        case EItemType::CoG: {
+            // the standard center of gravity symbol: a black disc with two opposite
+            // quadrants in white, the same glyph the marker draws in the 3D scene
+            const ImVec2 center(0.5f * (pos.x + pos.x + icon_size), 0.5f * (pos.y + pos.y + icon_size + 5.0f));
+            const float  radius = 0.5f * icon_size;
+            draw_list->AddCircleFilled(center, radius, ImGuiWrapper::to_ImU32(Objects_CoG_Dark), 16);
+            const ImU32 light = ImGuiWrapper::to_ImU32(Objects_CoG_Light);
+            // inset a little, so a rim of the disc stays as an outline
+            const float quadrant_radius = 0.86f * radius;
+            for (int quadrant = 0; quadrant < 4; quadrant += 2) {
+                draw_list->PathLineTo(center);
+                draw_list->PathArcTo(center, quadrant_radius, float(quadrant) * 0.5f * IM_PI, float(quadrant + 1) * 0.5f * IM_PI, 6);
+                draw_list->PathFillConvex(light);
+            }
             break;
         }
+        case EItemType::None:
+            break;
         }
 
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(20.0 * m_scale, 6.0 * m_scale));
@@ -5354,6 +5371,21 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
             append_option_item_with_type(type, Wipe_Color, _u8L("Wipe"), visible);
     };
 
+    // per-object center of gravity markers, offered next to the other preview options.
+    // Unlike those, this one is not backed by a move type buffer, so it needs its own row
+    auto append_cog_item = [this, append_item](const std::vector<float>& offsets) {
+        const bool visible = m_objects_cog.is_visible();
+        // EItemType::CoG draws the symbol itself, so the color argument is unused here
+        const ColorRGBA& color = Objects_CoG_Light;
+        append_item(EItemType::CoG, color, { { _u8L("Center of Gravity"), offsets[0] } },
+            true, offsets.back()/*ORCA checkbox_pos*/, visible, [this, visible]() {
+                m_objects_cog.set_visible(!visible);
+                if (wxGetApp().app_config != nullptr)
+                    wxGetApp().app_config->set_bool("show_objects_cog", !visible);
+                wxGetApp().plater()->get_current_canvas3D()->set_as_dirty();
+            });
+    };
+
     // extrusion paths section -> items
     switch (m_view_type)
     {
@@ -5400,19 +5432,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
             }
         }
 
-        // per-object center of gravity markers, hidden until switched on here
-        {
-            const bool cog_visible = m_objects_cog.is_visible();
-            // the flat legend icon cannot show the two tones of the symbol, so use the one that reads on the current theme
-            const ColorRGBA& cog_icon_color = m_is_dark ? Objects_CoG_Light : Objects_CoG_Dark;
-            append_item(EItemType::Circle, cog_icon_color, { { _u8L("Center of Gravity"), offsets[0] } },
-                true, offsets.back()/*ORCA checkbox_pos*/, cog_visible, [this, cog_visible]() {
-                    m_objects_cog.set_visible(!cog_visible);
-                    if (wxGetApp().app_config != nullptr)
-                        wxGetApp().app_config->set_bool("show_objects_cog", !cog_visible);
-                    wxGetApp().plater()->get_current_canvas3D()->set_as_dirty();
-                });
-        }
+        append_cog_item(offsets);
         break;
     }
     case EViewType::Height:         { append_range(m_extrusions.ranges.height, 2); break; }
@@ -6112,6 +6132,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
         append_headers({ {_u8L("Options"), offsets[0] }, { _u8L("Display"), offsets[1]} });
         for (auto item : options_items)
             append_option_item(item, offsets);
+        append_cog_item(offsets);
     }
 
     legend_height = ImGui::GetCurrentWindow()->Size.y;
