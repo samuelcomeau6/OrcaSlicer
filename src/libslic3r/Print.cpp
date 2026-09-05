@@ -1575,6 +1575,9 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         if (m_config.timelapse_type == TimelapseType::tlSmooth)
             return {L("Smooth mode of timelapse is not supported when \"by object\" sequence is enabled.")};
 
+        if (m_config.timelapse_type == TimelapseType::tlSmoothAnchored)
+            return {L("Smooth (anchored) mode of timelapse is not supported when \"by object\" sequence is enabled.")};
+
         //BBS: refine seq-print validation logic
         auto ret = sequential_print_clearance_valid(*this, collison_polygons, height_polygons);
         if (!ret.string.empty()) {
