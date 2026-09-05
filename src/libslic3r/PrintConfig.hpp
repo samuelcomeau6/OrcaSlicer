@@ -248,7 +248,9 @@ enum BrimType {
 
 enum TimelapseType : int {
     tlTraditional = 0,
-    tlSmooth
+    tlSmooth,
+    // 2 is burnt: old project files used it for "Traditional" and handle_legacy() rewrites it to 0.
+    tlSmoothAnchored = 3
 };
 
 enum SkirtType {
