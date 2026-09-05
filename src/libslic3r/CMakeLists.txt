@@ -236,6 +236,8 @@ set(lisbslic3r_sources
     #GCodeSender.hpp
     GCode/SmallAreaInfillFlowCompensator.cpp
     GCode/SmallAreaInfillFlowCompensator.hpp
+    GCode/SmoothTimelapse.cpp
+    GCode/SmoothTimelapse.hpp
     GCode/SpiralVase.cpp
     GCode/SpiralVase.hpp
     GCode/ThumbnailData.cpp
