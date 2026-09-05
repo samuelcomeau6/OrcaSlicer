@@ -12,6 +12,7 @@
 #include "GCode/CoolingBuffer.hpp"
 #include "GCode/FanMover.hpp"
 #include "GCode/RetractWhenCrossingPerimeters.hpp"
+#include "GCode/SmoothTimelapse.hpp"
 #include "GCode/SpiralVase.hpp"
 #include "GCode/ToolOrdering.hpp"
 #include "GCode/WipeTower.hpp"
@@ -602,6 +603,17 @@ private:
     std::unique_ptr<AdaptivePAProcessor>      m_pa_processor;
 
     std::unique_ptr<WipeTowerIntegration> m_wipe_tower;
+
+    // Smooth (anchored) timelapse: where to fire the timelapse block on each layer.
+    SmoothTimelapsePlanner                m_smooth_timelapse;
+    bool                                  m_smooth_timelapse_active { false };
+    // Per layer: the block still owes a frame, where it should be taken, and
+    // whether an extrusion may be broken open to take it (false when the anchor
+    // is the prime tower, which is not emitted through _extrude).
+    bool                                  m_smooth_timelapse_armed { false };
+    bool                                  m_smooth_timelapse_split { false };
+    Vec2d                                 m_smooth_timelapse_anchor { Vec2d::Zero() };
+    std::string                           m_smooth_timelapse_block;
 
     std::unique_ptr<SmallAreaInfillFlowCompensator> m_small_area_infill_flow_compensator;
     
