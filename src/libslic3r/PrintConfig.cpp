@@ -352,7 +352,8 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(BrimType)
 // using 0,1 to compatible with old files
 static const t_config_enum_values s_keys_map_TimelapseType = {
     {"0",       tlTraditional},
-    {"1",       tlSmooth}
+    {"1",       tlSmooth},
+    {"3",       tlSmoothAnchored}
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(TimelapseType)
 
@@ -5113,18 +5114,25 @@ void PrintConfigDef::init_fff_params()
 
     def = this->add("timelapse_type", coEnum);
     def->label = L("Timelapse");
-    def->tooltip = L("If smooth or traditional mode is selected, a timelapse video will be generated for each print. "
+    def->tooltip = L("If a timelapse mode is selected, a timelapse video will be generated for each print. "
                      "After each layer is printed, a snapshot is taken with the chamber camera. "
-                     "All of these snapshots are composed into a timelapse video when printing completes. "
-                     "If smooth mode is selected, the toolhead will move to the excess chute after each layer is printed "
-                     "and then take a snapshot. "
-                     "Since the melt filament may leak from the nozzle during the process of taking a snapshot, "
-                     "prime tower is required for smooth mode to wipe nozzle.");
+                     "All of these snapshots are composed into a timelapse video when printing completes.\n"
+                     "Traditional mode takes the snapshot wherever the toolhead happens to be when the layer ends.\n"
+                     "Smooth mode moves the toolhead to the excess chute after each layer is printed and then takes a "
+                     "snapshot. Since melted filament may leak from the nozzle while the snapshot is taken, a prime "
+                     "tower is required for smooth mode to wipe the nozzle.\n"
+                     "Smooth (anchored) mode fires the timelapse G-code at the same XY position on every layer, so the "
+                     "toolhead does not jump between frames. If the print has a prime tower, that is the anchor. "
+                     "Otherwise the print is searched for a spot that is printed on as many layers as possible and is "
+                     "printed slowly there; travel moves are never considered. Where no such spot spans the whole "
+                     "print, the anchor is allowed to drift slowly along the part.");
     def->enum_keys_map = &ConfigOptionEnum<TimelapseType>::get_enum_values();
     def->enum_values.emplace_back("0");
     def->enum_values.emplace_back("1");
+    def->enum_values.emplace_back("3");
     def->enum_labels.emplace_back(L("Traditional"));
     def->enum_labels.emplace_back(L("Smooth"));
+    def->enum_labels.emplace_back(L("Smooth (anchored)"));
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionEnum<TimelapseType>(tlTraditional));
 
