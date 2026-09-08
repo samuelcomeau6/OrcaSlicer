@@ -1154,7 +1154,7 @@ bool UnsavedChangesDialog::save(PresetCollection* dependent_presets, bool show_s
     return true;
 }
 
-wxString get_string_from_enum(const std::string& opt_key, const DynamicPrintConfig& config, bool is_infill = false, int idx = -1)
+wxString get_string_from_enum(const std::string& opt_key, const DynamicPrintConfig& config, int idx = -1)
 {
     const ConfigOptionDef& def = config.def()->options.at(opt_key);
     const std::vector<std::string>& names = def.enum_labels;//ConfigOptionEnum<T>::get_enum_names();
@@ -1165,19 +1165,13 @@ wxString get_string_from_enum(const std::string& opt_key, const DynamicPrintConf
     else
         val = config.option(opt_key)->getInt();
 
-    // Each infill doesn't use all list of infill declared in PrintConfig.hpp.
-    // So we should "convert" val to the correct one
-    if (is_infill) {
-        for (auto key_val : *def.enum_keys_map)
-            if (int(key_val.second) == val) {
-                auto it = std::find(def.enum_values.begin(), def.enum_values.end(), key_val.first);
-                if (it == def.enum_values.end())
-                    return "";
-                return from_u8(_utf8(names[it - def.enum_values.begin()]));
-            }
+    // enum_labels is indexed by the position in enum_values, which is neither the enum's
+    // numbering nor necessarily complete: each infill, for one, offers only some of the
+    // patterns declared in PrintConfig.hpp.
+    const int index = def.enum_index_of_value(val);
+    if (index < 0 || index >= int(names.size()))
         return _L("Undef");
-    }
-    return from_u8(_utf8(names[val]));
+    return from_u8(_utf8(names[index]));
 }
 
 // BBS
@@ -1357,26 +1351,9 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
         return join_vector_values(values, format_float_or_percent_value);
     }
     case coEnum: {
-        return get_string_from_enum(opt_key, config,
-            opt_key == "top_surface_pattern" ||
-            opt_key == "bottom_surface_pattern" ||
-            opt_key == "internal_solid_infill_pattern" ||
-            opt_key == "sparse_infill_pattern" ||
-            opt_key == "ironing_pattern" ||
-            opt_key == "support_ironing_pattern" ||
-            opt_key == "support_pattern" ||
-            opt_key == "support_interface_pattern")
-            ;
+        return get_string_from_enum(opt_key, config);
     }
     case coEnums: {
-        const bool is_infill = opt_key == "top_surface_pattern" ||
-                               opt_key == "bottom_surface_pattern" ||
-                               opt_key == "internal_solid_infill_pattern" ||
-                               opt_key == "sparse_infill_pattern" ||
-                               opt_key == "ironing_pattern" ||
-                               opt_key == "support_ironing_pattern" ||
-                               opt_key == "support_pattern" ||
-                               opt_key == "support_interface_pattern";
         if (orig_opt_idx < 0) {
             const auto* values = dynamic_cast<const ConfigOptionInts*>(raw_opt);
             if (values != nullptr && !values->empty()) {
@@ -1384,12 +1361,12 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
                 for (size_t i = 0; i < values->size(); ++i) {
                     if (i > 0)
                         joined += ", ";
-                    joined += into_u8(get_string_from_enum(opt_key, config, is_infill, int(i)));
+                    joined += into_u8(get_string_from_enum(opt_key, config, int(i)));
                 }
                 return from_u8(joined);
             }
         }
-        return get_string_from_enum(opt_key, config, is_infill, orig_opt_idx);
+        return get_string_from_enum(opt_key, config, orig_opt_idx);
     }
     case coPoint: {
         Vec2d val = config.opt<ConfigOptionPoint>(opt_key)->value;

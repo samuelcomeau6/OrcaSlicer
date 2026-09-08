@@ -321,34 +321,16 @@ static void add_config_substitutions(const ConfigSubstitutions& conf_substitutio
 			const std::vector<std::string>& values = def->enum_values;
 			int val = conf_substitution.new_value->getInt();
 
-			bool is_infill = def->opt_key == "top_surface_pattern"	   ||
-							 def->opt_key == "bottom_surface_pattern" ||
-							 def->opt_key == "internal_solid_infill_pattern" ||
-							 def->opt_key == "support_base_pattern" ||
-							 def->opt_key == "support_interface_pattern" ||
-							 def->opt_key == "ironing_pattern" ||
-							 def->opt_key == "support_ironing_pattern" ||
-							 def->opt_key == "sparse_infill_pattern";
-
-			// Each infill doesn't use all list of infill declared in PrintConfig.hpp.
-			// So we should "convert" val to the correct one
-			if (is_infill) {
-				for (const auto& key_val : *def->enum_keys_map)
-					if ((int)key_val.second == val) {
-						auto it = std::find(values.begin(), values.end(), key_val.first);
-						if (it == values.end())
-							break;
-						auto idx = it - values.begin();
-						new_val = wxString("\"") + values[idx] + "\"" + " (" + from_u8(_utf8(labels[idx])) + ")";
-						break;
-					}
-				if (new_val.IsEmpty()) {
-					assert(false);
-					new_val = _L("Undefined");
-				}
+			// enum_values / enum_labels are indexed by the position in the combo box list,
+			// which is neither the enum's numbering nor necessarily complete: each infill,
+			// for one, offers only some of the patterns declared in PrintConfig.hpp.
+			const int idx = def->enum_index_of_value(val);
+			if (idx < 0 || idx >= (int)values.size() || idx >= (int)labels.size()) {
+				assert(false);
+				new_val = _L("Undefined");
 			}
 			else
-				new_val = wxString("\"") + values[val] + "\"" + " (" + from_u8(_utf8(labels[val])) + ")";
+				new_val = wxString("\"") + values[idx] + "\"" + " (" + from_u8(_utf8(labels[idx])) + ")";
 			break;
 		}
 		case coBool:
