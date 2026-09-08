@@ -877,8 +877,8 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
         apply(config, &new_conf);
     }
     toggle_line("overhang_reverse_threshold", has_detect_overhang_wall && allow_overhang_reverse && has_overhang_reverse && !has_overhang_reverse_internal_only);
-    // Smooth (anchored) timelapse works on any machine that has a timelapse G-code
-    // block, so the option is no longer hidden for non-BBL printers.
+    // Anchor timelapse works on any machine that has a timelapse G-code block,
+    // so the option is no longer hidden for non-BBL printers.
     toggle_line("timelapse_type", true);
 
 
