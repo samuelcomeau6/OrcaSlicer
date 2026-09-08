@@ -1454,7 +1454,9 @@ void Choice::set_selection()
     choice_ctrl* field = dynamic_cast<choice_ctrl*>(window);
 	switch (m_opt.type) {
 	case coEnum:{
-        field->SetSelection(m_opt.default_value->getInt());
+        // The control is indexed by the position in enum_values, not by the enum value.
+        const int index = m_opt.enum_index_of_value(m_opt.default_value->getInt());
+        field->SetSelection(index < 0 ? 0 : index);
 		break;
 	}
 	case coFloat:
@@ -1575,23 +1577,13 @@ void Choice::set_value(const boost::any& value, bool change_event)
         if (m_opt_id.compare("host_type") == 0 && val != 0 &&
 			m_opt.enum_values.size() > field->GetCount()) // for case, when PrusaLink isn't used as a HostType
 			val--;
-        if (m_opt_id == "top_surface_pattern" || m_opt_id == "bottom_surface_pattern" ||
-            m_opt_id == "internal_solid_infill_pattern" || m_opt_id == "sparse_infill_pattern" ||
-            m_opt_id == "support_base_pattern" || m_opt_id == "support_interface_pattern" ||
-            m_opt_id == "ironing_pattern" || m_opt_id == "support_ironing_pattern" ||
-            m_opt_id == "support_style" || m_opt_id == "curr_bed_type")
+        else if (m_opt.enum_keys_map != nullptr && !m_opt.enum_values.empty() &&
+                 !(m_opt.nullable && val == ConfigOptionEnumsGenericNullable::nil_value()))
 		{
-			std::string key;
-			const t_config_enum_values& map_names = *m_opt.enum_keys_map;
-			for (auto it : map_names)
-				if (val == it.second) {
-					key = it.first;
-					break;
-				}
-
-			const std::vector<std::string>& values = m_opt.enum_values;
-			auto it = std::find(values.begin(), values.end(), key);
-			val = it == values.end() ? 0 : it - values.begin();
+			// The control is indexed by the position in enum_values, which is
+			// neither the enum's numbering nor necessarily complete.
+			const int index = m_opt.enum_index_of_value(val);
+			val = index < 0 ? 0 : index;
 		}
         if (m_opt.nullable) {
             if (val != ConfigOptionEnumsGenericNullable::nil_value())
@@ -1666,27 +1658,22 @@ boost::any& Choice::get_value()
     {
         if (m_opt.nullable && field->GetSelection() == -1)
             m_value = ConfigOptionEnumsGenericNullable::nil_value();
-        else if (   m_opt_id == "top_surface_pattern" || m_opt_id == "bottom_surface_pattern" ||
-                    m_opt_id == "internal_solid_infill_pattern" || m_opt_id == "sparse_infill_pattern" ||
-                    m_opt_id == "support_base_pattern" || m_opt_id == "support_interface_pattern" ||
-                    m_opt_id == "ironing_pattern" || m_opt_id == "support_ironing_pattern" ||
-                    m_opt_id == "support_style" || m_opt_id == "curr_bed_type")
-        {
-            // Selection can be invalid when the current value is not present in the rebuilt
-            // enum list (e.g. stale support_style vs support_type); fall back to the first
-            // entry instead of indexing out of bounds.
-            const int selection = field->GetSelection();
-            if (! m_opt.enum_values.empty()) {
-                const int index = (selection >= 0 && selection < static_cast<int>(m_opt.enum_values.size())) ? selection : 0;
-                const std::string &key = m_opt.enum_values[index];
-                m_value = static_cast<int>(m_opt.enum_keys_map->at(key));
-            }
-        }
         // Support ThirdPartyPrinter
         else if (m_opt_id.compare("host_type") == 0 && m_opt.enum_values.size() > field->GetCount())
         {
             // for case, when PrusaLink isn't used as a HostType
             m_value = field->GetSelection() + 1;
+        }
+        else if (m_opt.enum_keys_map != nullptr && !m_opt.enum_values.empty())
+        {
+            // The control is indexed by the position in enum_values, which is neither the
+            // enum's numbering nor necessarily complete. Selection can also be invalid when
+            // the current value is not present in the rebuilt enum list (e.g. stale
+            // support_style vs support_type); fall back to the first entry then.
+            const int selection = field->GetSelection();
+            const int index     = (selection >= 0 && selection < static_cast<int>(m_opt.enum_values.size())) ? selection : 0;
+            const int value     = m_opt.enum_value_at_index(index);
+            m_value = value < 0 ? index : value;
         }
         else
             m_value = field->GetSelection();
