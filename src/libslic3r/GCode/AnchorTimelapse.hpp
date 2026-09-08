@@ -1,35 +1,32 @@
-///|/ Smooth (anchored) timelapse support.
+///|/ Anchor timelapse support.
 ///|/
 ///|/ Picks, for every printed layer, the XY position at which the timelapse
-///|/ G-code block should be fired, and provides the geometry helper that breaks
-///|/ an extrusion open at that position while the layer is being written.
+///|/ G-code block should be fired, and provides the helper that splices the
+///|/ block into a finished layer's G-code at the line where the nozzle passes
+///|/ that position. The layer's G-code is never otherwise altered and no move
+///|/ is added.
 ///|/
-#ifndef slic3r_GCode_SmoothTimelapse_hpp_
-#define slic3r_GCode_SmoothTimelapse_hpp_
+#ifndef slic3r_GCode_AnchorTimelapse_hpp_
+#define slic3r_GCode_AnchorTimelapse_hpp_
 
+#include <string>
 #include <vector>
 
 #include "../libslic3r.h"
 #include "../ExtrusionEntity.hpp"
 #include "../Point.hpp"
-#include "../Polyline.hpp"
 
 namespace Slic3r {
 
 class Print;
 
-// How close an extrusion has to pass to the anchor to be broken open there [mm].
-// The anchor is always an actual point on an extrusion of that layer, so this is
-// only slack for seam clipping, arc fitting and path simplification.
-static constexpr double SMOOTH_TIMELAPSE_CAPTURE_MM = 0.6;
-
-// Can the frame be taken in the middle of this kind of extrusion?
+// Which extrusion roles the anchor is allowed to sit on.
 //
 // Outer perimeters are excluded: they are what the print is judged on, and the
 // pause artefact belongs anywhere else. Anything printed over air is excluded
 // too - bridge speeds are slow, which would otherwise make bridges attractive
 // anchors, and stopping on one is how you get a droop.
-inline bool smooth_timelapse_role_eligible(ExtrusionRole role)
+inline bool anchor_timelapse_role_eligible(ExtrusionRole role)
 {
     switch (role) {
     case erPerimeter:
@@ -50,9 +47,9 @@ inline bool smooth_timelapse_role_eligible(ExtrusionRole role)
 // same place on every frame.
 //
 // Selection rules, in order:
-//   * A prime tower, when the print has one, is the anchor straight away. It is
-//     printed at a fixed XY on every layer and it is sacrificial, so no search
-//     is needed or wanted.
+//   * A prime tower, when the print has a real multi-filament one, is the anchor
+//     straight away. It is printed at a fixed XY on every layer and it is
+//     sacrificial, so no search is needed or wanted.
 //   * Otherwise the eligible extrusions of the whole print are binned into a
 //     coarse XY grid and searched for a column of material that exists on as
 //     many layers as possible and is printed slowly where it exists. Travel
@@ -64,12 +61,13 @@ inline bool smooth_timelapse_role_eligible(ExtrusionRole role)
 //     from one layer to the next, so the anchor creeps along the part instead
 //     of jumping around it.
 //
-// Every anchor is a point that actually lies on an extrusion of its own layer,
-// so the layer can be broken open exactly there.
+// Every grid-search anchor is a point that actually lies on an extrusion of its
+// own layer, so the nozzle is guaranteed to pass through it while that layer is
+// printed.
 //
-// Nothing here runs unless smooth (anchored) timelapse is actually selected;
-// the planning happens once, at G-code export time, off the slicing path.
-class SmoothTimelapsePlanner
+// Nothing here runs unless anchor timelapse is actually selected; the planning
+// happens once, at G-code export time, off the slicing path.
+class AnchorTimelapsePlanner
 {
 public:
     // Plan the anchors for this print. Returns false when no anchor could be
@@ -103,19 +101,17 @@ private:
     double                    m_coverage{0.};
 };
 
-// Break `src` in two at the point closest to `anchor`, where `anchor` is in
-// G-code XY and the polyline is in object coordinates offset by `origin`.
-//
-// Returns false - leaving `first` and `second` untouched - when no segment
-// passes within `capture_mm` of the anchor, or when the cut would leave a
-// stub too short to be worth emitting.
-bool smooth_timelapse_split_polyline(const Polyline &src,
-                                     const Vec2d    &origin,
-                                     const Vec2d    &anchor,
-                                     double          capture_mm,
-                                     Polyline       &first,
-                                     Polyline       &second);
+// Splice `block` into one layer's G-code at the line boundary where the toolhead
+// is closest to `anchor` (both in G-code XY; `start_xy` is the toolhead position
+// before the first line). No existing line is modified and no move is added -
+// the block simply lands between the two G-code lines that bracket the moment
+// the nozzle passes the anchor. Returns `layer_gcode` unchanged when `block` is
+// empty.
+std::string anchor_timelapse_insert_block(const std::string &layer_gcode,
+                                          const Vec2d       &start_xy,
+                                          const Vec2d       &anchor,
+                                          const std::string &block);
 
 } // namespace Slic3r
 
-#endif // slic3r_GCode_SmoothTimelapse_hpp_
+#endif // slic3r_GCode_AnchorTimelapse_hpp_

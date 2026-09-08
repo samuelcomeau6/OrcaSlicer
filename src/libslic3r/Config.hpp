@@ -1946,6 +1946,29 @@ public:
         return false;
     }
 
+    // A combo box lists `enum_values`, whose order need not match the numbering
+    // of the enum and which may skip values entirely (retired ones, or values
+    // the option does not offer). Map between a combo box index and the enum
+    // value; both return -1 when there is no counterpart.
+    int enum_index_of_value(int value) const {
+        if (enum_keys_map == nullptr)
+            return value >= 0 && value < int(enum_values.size()) ? value : -1;
+        for (const auto &kvp : *enum_keys_map)
+            if (int(kvp.second) == value)
+                for (size_t i = 0; i < enum_values.size(); ++ i)
+                    if (enum_values[i] == kvp.first)
+                        return int(i);
+        return -1;
+    }
+    int enum_value_at_index(int index) const {
+        if (index < 0 || index >= int(enum_values.size()))
+            return -1;
+        if (enum_keys_map == nullptr)
+            return index;
+        auto it = enum_keys_map->find(enum_values[index]);
+        return it == enum_keys_map->end() ? -1 : int(it->second);
+    }
+
     // 0 is an invalid key.
     size_t 								serialization_key_ordinal = 0;
 
