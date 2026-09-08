@@ -1,6 +1,6 @@
-///|/ Smooth (anchored) timelapse support. See SmoothTimelapse.hpp.
+///|/ Anchor timelapse support. See AnchorTimelapse.hpp.
 ///|/
-#include "SmoothTimelapse.hpp"
+#include "AnchorTimelapse.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +10,7 @@
 #include <boost/log/trivial.hpp>
 
 #include "../ExtrusionEntityCollection.hpp"
+#include "../GCodeReader.hpp"
 #include "../Geometry.hpp"
 #include "../Layer.hpp"
 #include "../Print.hpp"
@@ -106,7 +107,7 @@ public:
     // Returns 0 for anything the frame may not be taken on.
     double speed(ExtrusionRole role) const
     {
-        if (!smooth_timelapse_role_eligible(role))
+        if (!anchor_timelapse_role_eligible(role))
             return 0.;
         switch (role) {
         case erPerimeter: return m_inner_wall;
@@ -133,7 +134,7 @@ private:
 // Planning
 // ----------------------------------------------------------------------------
 
-bool SmoothTimelapsePlanner::plan(const Print &print)
+bool AnchorTimelapsePlanner::plan(const Print &print)
 {
     m_layers.clear();
     m_valid       = false;
@@ -141,9 +142,16 @@ bool SmoothTimelapsePlanner::plan(const Print &print)
     m_max_drift   = 0.;
     m_coverage    = 0.;
 
-    // A prime tower answers the question outright: it is printed at the same XY
-    // on every layer and it is there to be sacrificed.
-    if (print.has_wipe_tower()) {
+    // A real multi-filament prime tower answers the question outright: it is
+    // printed at the same XY on every layer and it is there to be sacrificed.
+    //
+    // print.has_wipe_tower() is also true for a single-filament print that only
+    // asks for a tower to service a "smooth" timelapse - there is no tool-change
+    // tower in that case and the G-code generator never builds a
+    // WipeTowerIntegration for it, so the frame could never be fired there.
+    // Require more than one extruder so those prints fall through to the grid
+    // search below instead of anchoring on a tower that will not be printed.
+    if (print.has_wipe_tower() && print.extruders().size() > 1) {
         const PrintConfig &cfg   = print.config();
         const int          plate = print.get_plate_index();
         const double       x     = cfg.wipe_tower_x.get_at(plate);
@@ -162,7 +170,7 @@ bool SmoothTimelapsePlanner::plan(const Print &print)
         m_prime_tower  = true;
         m_valid        = true;
         m_coverage     = 1.;
-        BOOST_LOG_TRIVIAL(info) << "Smooth timelapse: anchored on the prime tower at " << m_fixed_anchor.x() << ", "
+        BOOST_LOG_TRIVIAL(info) << "Anchor timelapse: anchored on the prime tower at " << m_fixed_anchor.x() << ", "
                                 << m_fixed_anchor.y();
         return true;
     }
@@ -396,12 +404,12 @@ bool SmoothTimelapsePlanner::plan(const Print &print)
     m_coverage = double(with_mat) / double(n_layers);
     m_valid    = true;
 
-    BOOST_LOG_TRIVIAL(info) << "Smooth timelapse: planned " << n_layers << " layers from " << K << " candidate spots, coverage "
+    BOOST_LOG_TRIVIAL(info) << "Anchor timelapse: planned " << n_layers << " layers from " << K << " candidate spots, coverage "
                             << int(m_coverage * 100.) << "%, max drift " << m_max_drift << " mm";
     return true;
 }
 
-bool SmoothTimelapsePlanner::anchor_for_print_z(double print_z, Vec2d &out) const
+bool AnchorTimelapsePlanner::anchor_for_print_z(double print_z, Vec2d &out) const
 {
     if (!m_valid)
         return false;
@@ -420,75 +428,54 @@ bool SmoothTimelapsePlanner::anchor_for_print_z(double print_z, Vec2d &out) cons
 }
 
 // ----------------------------------------------------------------------------
-// Breaking an extrusion open at the anchor
+// Splicing the block into a finished layer's G-code
 // ----------------------------------------------------------------------------
 
-bool smooth_timelapse_split_polyline(const Polyline &src,
-                                     const Vec2d    &origin,
-                                     const Vec2d    &anchor,
-                                     double          capture_mm,
-                                     Polyline       &first,
-                                     Polyline       &second)
+std::string anchor_timelapse_insert_block(const std::string &layer_gcode,
+                                          const Vec2d       &start_xy,
+                                          const Vec2d       &anchor,
+                                          const std::string &block)
 {
-    const Points &pts = src.points;
-    if (pts.size() < 2)
-        return false;
+    if (block.empty())
+        return layer_gcode;
 
-    // Work in scaled coordinates, the same ones the emitted moves are built from.
-    const Vec2d  target      = (anchor - origin) / SCALING_FACTOR;
-    const double capture2    = (capture_mm / SCALING_FACTOR) * (capture_mm / SCALING_FACTOR);
-    // Do not leave a stub shorter than this on either side of the cut.
-    const double min_stub    = 0.2 / SCALING_FACTOR;
+    // Walk the layer's moves, tracking the toolhead XY, and remember the line
+    // boundary at which it comes closest to the anchor. The block goes there:
+    // no line is touched and nothing extra is travelled - the nozzle is already
+    // as near the anchor as this layer's toolpath ever gets.
+    GCodeReader reader;
+    reader.x() = float(start_xy.x());
+    reader.y() = float(start_xy.y());
 
-    size_t best_i  = 0;
-    double best_t  = 0.;
-    double best_d2 = std::numeric_limits<double>::max();
-    for (size_t i = 1; i < pts.size(); ++i) {
-        const Vec2d  a  = pts[i - 1].cast<double>();
-        const Vec2d  b  = pts[i].cast<double>();
-        const Vec2d  d  = b - a;
-        const double l2 = d.squaredNorm();
-        double       t  = 0.;
-        if (l2 > 0.)
-            t = std::max(0., std::min(1., (target - a).dot(d) / l2));
-        const double d2 = (a + d * t - target).squaredNorm();
+    double best_d2  = (start_xy - anchor).squaredNorm();
+    size_t best_off = 0; // byte offset to splice at; 0 == before the first line
+    auto   noop     = [](GCodeReader &, const GCodeReader::GCodeLine &) {};
+
+    const char *const base = layer_gcode.c_str();
+    const char       *p    = base;
+    const char *const end  = base + layer_gcode.size();
+    GCodeReader::GCodeLine gline;
+    while (p < end) {
+        gline.reset();
+        const char *next = reader.parse_line(p, end, gline, noop);
+        if (next <= p) // defensive: never seen, but do not spin
+            break;
+        const double d2 = (Vec2d(double(reader.x()), double(reader.y())) - anchor).squaredNorm();
         if (d2 < best_d2) {
-            best_d2 = d2;
-            best_i  = i;
-            best_t  = t;
+            best_d2  = d2;
+            best_off = size_t(next - base);
         }
+        p = next;
     }
-    if (best_d2 > capture2)
-        return false;
 
-    const Vec2d a   = pts[best_i - 1].cast<double>();
-    const Vec2d b   = pts[best_i].cast<double>();
-    const Vec2d cut = a + (b - a) * best_t;
-
-    // Length up to and after the cut, so neither half comes out as a stub.
-    double before = 0.;
-    for (size_t i = 1; i < best_i; ++i)
-        before += (pts[i] - pts[i - 1]).cast<double>().norm();
-    before += (cut - a).norm();
-    double after = (b - cut).norm();
-    for (size_t i = best_i + 1; i < pts.size(); ++i)
-        after += (pts[i] - pts[i - 1]).cast<double>().norm();
-    if (before < min_stub || after < min_stub)
-        return false;
-
-    const Point cut_pt(coord_t(std::lround(cut.x())), coord_t(std::lround(cut.y())));
-
-    first.points.assign(pts.begin(), pts.begin() + best_i);
-    if (first.points.empty() || first.points.back() != cut_pt)
-        first.points.emplace_back(cut_pt);
-
-    second.points.clear();
-    second.points.emplace_back(cut_pt);
-    for (size_t i = best_i; i < pts.size(); ++i)
-        if (pts[i] != cut_pt)
-            second.points.emplace_back(pts[i]);
-
-    return first.points.size() >= 2 && second.points.size() >= 2;
+    std::string out;
+    out.reserve(layer_gcode.size() + block.size() + 1);
+    out.append(layer_gcode, 0, best_off);
+    if (best_off != 0 && out.back() != '\n')
+        out.push_back('\n');
+    out.append(block);
+    out.append(layer_gcode, best_off, std::string::npos);
+    return out;
 }
 
 } // namespace Slic3r

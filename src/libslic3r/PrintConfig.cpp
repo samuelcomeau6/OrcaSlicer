@@ -353,7 +353,7 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(BrimType)
 static const t_config_enum_values s_keys_map_TimelapseType = {
     {"0",       tlTraditional},
     {"1",       tlSmooth},
-    {"3",       tlSmoothAnchored}
+    {"3",       tlAnchored}
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(TimelapseType)
 
@@ -5121,18 +5121,18 @@ void PrintConfigDef::init_fff_params()
                      "Smooth mode moves the toolhead to the excess chute after each layer is printed and then takes a "
                      "snapshot. Since melted filament may leak from the nozzle while the snapshot is taken, a prime "
                      "tower is required for smooth mode to wipe the nozzle.\n"
-                     "Smooth (anchored) mode fires the timelapse G-code at the same XY position on every layer, so the "
-                     "toolhead does not jump between frames. If the print has a prime tower, that is the anchor. "
-                     "Otherwise the print is searched for a spot that is printed on as many layers as possible and is "
-                     "printed slowly there; travel moves are never considered. Where no such spot spans the whole "
-                     "print, the anchor is allowed to drift slowly along the part.");
+                     "Anchor timelapse mode fires the timelapse G-code at the same XY position on every layer, so the "
+                     "toolhead does not jump between frames. For a multi-filament print with a prime tower, that tower "
+                     "is the anchor. Otherwise the print is searched for a spot that is printed on as many layers as "
+                     "possible and is printed slowly there; travel moves are never considered. Where no such spot "
+                     "spans the whole print, the anchor is allowed to drift slowly along the part.");
     def->enum_keys_map = &ConfigOptionEnum<TimelapseType>::get_enum_values();
     def->enum_values.emplace_back("0");
     def->enum_values.emplace_back("1");
     def->enum_values.emplace_back("3");
     def->enum_labels.emplace_back(L("Traditional"));
     def->enum_labels.emplace_back(L("Smooth"));
-    def->enum_labels.emplace_back(L("Smooth (anchored)"));
+    def->enum_labels.emplace_back(L("Anchor timelapse"));
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionEnum<TimelapseType>(tlTraditional));
 

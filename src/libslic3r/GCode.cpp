@@ -1,5 +1,3 @@
-#include <typeinfo>
-
 #include "BoundingBox.hpp"
 #include "Config.hpp"
 #include "Polygon.hpp"
@@ -2526,20 +2524,20 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
     this->placeholder_parser().set("total_layer_count", m_layer_count);
     // Useful for sequential prints.
     this->placeholder_parser().set("current_object_idx", 0);
-    // Smooth (anchored) timelapse: work out where the timelapse block should be
-    // fired on each layer before any G-code is emitted. None of this runs
-    // unless the mode is actually selected.
-    m_smooth_timelapse_active = false;
-    if (print.config().timelapse_type.value == TimelapseType::tlSmoothAnchored && !m_config.time_lapse_gcode.value.empty() &&
+    // Anchor timelapse: work out where the timelapse block should be fired on
+    // each layer before any G-code is emitted. None of this runs unless the mode
+    // is actually selected.
+    m_anchor_timelapse_active = false;
+    if (print.config().timelapse_type.value == TimelapseType::tlAnchored && !m_config.time_lapse_gcode.value.empty() &&
         print.config().print_sequence == PrintSequence::ByLayer && !print.config().spiral_mode.value) {
-        if (m_smooth_timelapse.plan(print)) {
-            m_smooth_timelapse_active = true;
-            if (!m_smooth_timelapse.anchored_on_prime_tower() && m_smooth_timelapse.coverage() < 0.999)
+        if (m_anchor_timelapse.plan(print)) {
+            m_anchor_timelapse_active = true;
+            if (!m_anchor_timelapse.anchored_on_prime_tower() && m_anchor_timelapse.coverage() < 0.999)
                 BOOST_LOG_TRIVIAL(warning)
-                    << "Smooth timelapse: no single spot is printed on every layer; the anchor drifts by up to "
-                    << m_smooth_timelapse.max_drift() << " mm between layers.";
+                    << "Anchor timelapse: no single spot is printed on every layer; the anchor drifts by up to "
+                    << m_anchor_timelapse.max_drift() << " mm between layers.";
         } else {
-            BOOST_LOG_TRIVIAL(warning) << "Smooth timelapse: could not plan an anchor, falling back to traditional timelapse.";
+            BOOST_LOG_TRIVIAL(warning) << "Anchor timelapse: could not plan an anchor, falling back to traditional timelapse.";
         }
     }
 
@@ -4833,6 +4831,10 @@ LayerResult GCode::process_layer(const Print& print,
     std::string gcode;
     assert(is_decimal_separator_point()); // for the sprintfs
 
+    // Anchor timelapse: the toolhead XY at the very start of this layer's G-code,
+    // needed later to splice the timelapse block in at the right line.
+    const Vec2d anchor_timelapse_start_xy(m_writer.get_position().x(), m_writer.get_position().y());
+
     // add tag for processor
     gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Layer_Change) + "\n";
     // export layer z
@@ -4860,13 +4862,13 @@ LayerResult GCode::process_layer(const Print& print,
     }
 
     PrinterStructure printer_structure                           = m_config.printer_structure.value;
-    // Smooth (anchored) timelapse places the block itself once the whole layer
-    // is known, so none of the fixed insertion points below may fire as well.
-    Vec2d            smooth_timelapse_anchor = Vec2d::Zero();
-    const bool       smooth_timelapse        = m_smooth_timelapse_active &&
-                                        m_smooth_timelapse.anchor_for_print_z(print_z, smooth_timelapse_anchor);
+    // Anchor timelapse places the block itself once the whole layer is known,
+    // so none of the fixed insertion points below may fire as well.
+    Vec2d            anchor_timelapse_pos = Vec2d::Zero();
+    const bool       anchor_timelapse     = m_anchor_timelapse_active &&
+                                        m_anchor_timelapse.anchor_for_print_z(print_z, anchor_timelapse_pos);
     bool             need_insert_timelapse_gcode_for_traditional = false;
-    if (!smooth_timelapse && printer_structure == PrinterStructure::psI3 && !m_spiral_vase &&
+    if (!anchor_timelapse && printer_structure == PrinterStructure::psI3 && !m_spiral_vase &&
         (!m_wipe_tower || !m_wipe_tower->enable_timelapse_print()) && print.config().print_sequence == PrintSequence::ByLayer) {
         need_insert_timelapse_gcode_for_traditional = true;
     }
@@ -4892,7 +4894,7 @@ LayerResult GCode::process_layer(const Print& print,
     m_layer                  = &layer;
     m_object_layer_over_raft = false;
     if (is_BBL_Printer()) {
-        if (!smooth_timelapse && printer_structure == PrinterStructure::psI3 && !need_insert_timelapse_gcode_for_traditional &&
+        if (!anchor_timelapse && printer_structure == PrinterStructure::psI3 && !need_insert_timelapse_gcode_for_traditional &&
             !m_spiral_vase && print.config().print_sequence == PrintSequence::ByLayer) {
             std::string timepals_gcode = insert_timelapse_gcode();
             if (!timepals_gcode.empty()) {
@@ -4908,7 +4910,7 @@ LayerResult GCode::process_layer(const Print& print,
             }
         }
     } else {
-        if (!smooth_timelapse && !m_config.time_lapse_gcode.value.empty()) {
+        if (!anchor_timelapse && !m_config.time_lapse_gcode.value.empty()) {
             DynamicConfig config;
             config.set_key_value("layer_num", new ConfigOptionInt(m_layer_index));
             config.set_key_value("layer_z", new ConfigOptionFloat(print_z));
@@ -4918,19 +4920,10 @@ LayerResult GCode::process_layer(const Print& print,
                      "\n";
         }
     }
-    // Smooth (anchored) timelapse: arm the layer. The frame is taken later, in
-    // _extrude, at the moment the toolhead reaches this layer's anchor.
-    m_smooth_timelapse_block.clear();
-    m_smooth_timelapse_armed = false;
-    m_smooth_timelapse_split = false;
-    if (smooth_timelapse) {
-        m_smooth_timelapse_block = insert_timelapse_gcode();
-        if (!m_smooth_timelapse_block.empty()) {
-            m_smooth_timelapse_anchor = smooth_timelapse_anchor;
-            m_smooth_timelapse_armed  = true;
-            m_smooth_timelapse_split  = !m_smooth_timelapse.anchored_on_prime_tower();
-        }
-    }
+    // Anchor timelapse: build the block now; it is spliced into the finished
+    // layer G-code at the end of this function, at the line where the nozzle
+    // passes anchor_timelapse_pos. Nothing is inserted along the way.
+    const std::string anchor_timelapse_block = anchor_timelapse ? insert_timelapse_gcode() : std::string();
 
     if (!m_config.layer_change_gcode.value.empty()) {
         DynamicConfig config;
@@ -6361,21 +6354,11 @@ LayerResult GCode::process_layer(const Print& print,
         } else {
             gcode_toolchange = this->set_extruder(extruder_id, print_z);
         }
-        const bool wipe_tower_emitted = has_wipe_tower && !gcode_toolchange.empty();
         if (!gcode_toolchange.empty()) {
             // Disable vase mode for layers that has toolchange
             result.spiral_vase_enable = false;
         }
         gcode += std::move(gcode_toolchange);
-
-        // Smooth (anchored) timelapse anchored on the prime tower: the toolhead
-        // has just finished on the tower, which is the anchor. The tower is
-        // emitted as ready-made G-code, so this is where the frame is taken
-        // rather than in _extrude.
-        if (m_smooth_timelapse_armed && !m_smooth_timelapse_split && wipe_tower_emitted) {
-            gcode += m_smooth_timelapse_block;
-            m_smooth_timelapse_armed = false;
-        }
 
         // let analyzer tag generator aware of a role type change
         if (layer_tools.has_wipe_tower && m_wipe_tower)
@@ -6709,16 +6692,13 @@ LayerResult GCode::process_layer(const Print& print,
                                    << " split_fallbacks=" << pointillism_path_split_fallbacks;
     }
 
-    // Smooth (anchored) timelapse: the toolhead never reached the anchor on this
-    // layer - nothing eligible was extruded near it, or the layer had no
-    // extrusions at all. Take the frame anyway rather than dropping it; one
-    // off-anchor frame beats a gap in the video.
-    if (m_smooth_timelapse_armed) {
-        BOOST_LOG_TRIVIAL(debug) << "Smooth timelapse: layer " << layer.id() << " never reached the anchor at "
-                                 << m_smooth_timelapse_anchor.x() << ", " << m_smooth_timelapse_anchor.y()
-                                 << "; taking the frame at the end of the layer.";
-        gcode += m_smooth_timelapse_block;
-        m_smooth_timelapse_armed = false;
+    // Anchor timelapse: splice the timelapse block into the finished layer at
+    // the line where the nozzle passes the planned anchor. This never moves the
+    // toolhead or edits a move - it only chooses where, in the existing stream,
+    // the block goes. On a layer that never comes near the anchor the block
+    // lands at the point of nearest approach.
+    if (anchor_timelapse && !anchor_timelapse_block.empty()) {
+        gcode = anchor_timelapse_insert_block(gcode, anchor_timelapse_start_xy, anchor_timelapse_pos, anchor_timelapse_block);
     }
 
     result.gcode                = std::move(gcode);
@@ -7471,28 +7451,6 @@ bool GCode::_needSAFC(const ExtrusionPath& path)
 
 std::string GCode::_extrude(const ExtrusionPath& path, std::string description, double speed)
 {
-    // Smooth (anchored) timelapse: if this extrusion passes this layer's anchor,
-    // break it in two and take the frame at the break. The timelapse block is
-    // assumed to be a bare frame-grab macro, so nothing is retracted, lifted or
-    // restored around it - the extrusion simply resumes on the far side.
-    // Derived paths (sloped scarf joints, oriented paths) are left alone: they
-    // carry state that a straight polyline cut would lose.
-    if (m_smooth_timelapse_armed && m_smooth_timelapse_split && smooth_timelapse_role_eligible(path.role()) &&
-        typeid(path) == typeid(ExtrusionPath)) {
-        Polyline first_half, second_half;
-        if (smooth_timelapse_split_polyline(path.polyline, m_origin, m_smooth_timelapse_anchor, SMOOTH_TIMELAPSE_CAPTURE_MM,
-                                            first_half, second_half)) {
-            m_smooth_timelapse_armed = false; // one frame per layer
-            ExtrusionPath before(path), after(path);
-            before.polyline = std::move(first_half);
-            after.polyline  = std::move(second_half);
-            std::string split_gcode = this->_extrude(before, description, speed);
-            split_gcode += m_smooth_timelapse_block;
-            split_gcode += this->_extrude(after, description, speed);
-            return split_gcode;
-        }
-    }
-
     std::string gcode;
 
     if (is_bridge(path.role()))
