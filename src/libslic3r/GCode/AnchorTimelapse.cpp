@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <unordered_map>
 
 #include <boost/log/trivial.hpp>
@@ -15,12 +16,17 @@
 #include "../Layer.hpp"
 #include "../Print.hpp"
 #include "../PrintConfig.hpp"
+#include "GCodeProcessor.hpp"
 
 namespace Slic3r {
 
 // ----------------------------------------------------------------------------
 // Tunables. Deliberately compile-time: they describe the shape of the search,
 // not a user preference.
+//
+// The costs are all in millimetres of anchor movement, which is the only thing
+// the plan trades away: ABSENT_COST is "I would move the anchor this far rather
+// than fire one frame where there is no material".
 // ----------------------------------------------------------------------------
 namespace {
 
@@ -31,17 +37,23 @@ constexpr double GRID_MM = 2.;
 // Distance between samples taken along an extrusion [mm]. Half a cell, so no
 // cell a path crosses can be missed.
 constexpr double SAMPLE_MM = GRID_MM * 0.5;
-// How many grid cells survive into the dynamic program.
-constexpr size_t MAX_CANDIDATES = 64;
-// Cost of moving the anchor, per mm of XY drift between two layers. The speed
-// score is normalised to [0, 1], so 0.02 means "moving the anchor 50 mm has to
-// buy at least a full slowest-to-fastest improvement in print speed".
-constexpr double DRIFT_COST_PER_MM = 0.02;
+// How many grid cells survive into the dynamic program. The shortlist is filled
+// in two tiers: first spots spread at least MIN_SEPARATION_MM apart, so a plan
+// that has to cross the plate has somewhere to cross to, then the best of what
+// is left regardless of separation, which is what gives the anchor a neighbour
+// one cell away to step onto.
+constexpr size_t MAX_CANDIDATES = 192;
+constexpr double MIN_SEPARATION_MM = 4. * GRID_MM;
+// Cost of moving the anchor, per mm of XY drift between two layers.
+constexpr double DRIFT_COST_PER_MM = 1.;
 // Flat cost of moving the anchor at all - stops it dithering between two
 // equally good neighbouring cells.
 constexpr double SWITCH_COST = 0.05;
-// Cost of keeping an anchor on a layer that has no material there. Higher than
-// any speed score, so the plan only does this when it has no choice.
+// The anchor may not step further than this between two layers while it still
+// has material under it. It only gets to cross the plate on a layer where its
+// own spot has run out, which is what turns a teleport into a creep.
+constexpr double MAX_STEP_MM = 5.;
+// Cost of keeping the anchor on a layer that has no material there.
 constexpr double ABSENT_COST = 5.;
 // Layers closer together than this are treated as the same layer [mm].
 constexpr double Z_TOLERANCE = 1e-4;
@@ -51,9 +63,8 @@ inline int32_t cell_of(double v) { return int32_t(std::floor(v / GRID_MM)); }
 
 struct CellAgg
 {
-    uint32_t layers{0};      // number of distinct layers with material here
+    uint32_t layers{0};      // number of distinct layers with eligible material here
     int32_t  last_layer{-1}; // dedup helper for `layers`
-    float    min_speed{std::numeric_limits<float>::max()};
     double   sx{0.};
     double   sy{0.};
     uint32_t n{0};
@@ -78,56 +89,6 @@ template<typename Fn> void visit_paths(const ExtrusionEntity *ee, Fn &&fn)
     }
 }
 
-// The nominal print speed the G-code generator will use for `role`. This
-// mirrors the role dispatch in GCode::_extrude; it does not need to be exact,
-// only to rank one place in the print against another.
-//
-// Roles the frame may not be taken on return 0 and are dropped by the caller,
-// so an outer wall can never become an anchor even if it is the slowest thing
-// on the layer.
-class SpeedModel
-{
-public:
-    SpeedModel(const Print &print, const PrintRegionConfig &region, const PrintObjectConfig &object)
-    {
-        const size_t i = get_config_idx(print.config(), ConfigFlowDomain::Process, 0);
-        auto at = [i](const ConfigOptionFloats &o) { return o.values.empty() ? 0. : o.get_at(i); };
-
-        m_inner_wall   = at(region.inner_wall_speed);
-        m_sparse       = at(region.sparse_infill_speed);
-        m_solid        = at(region.internal_solid_infill_speed);
-        m_top          = at(region.top_surface_speed);
-        m_ironing      = at(region.ironing_speed);
-        m_gap          = at(region.gap_infill_speed);
-        m_support      = at(object.support_speed);
-        m_support_intf = at(object.support_interface_speed);
-        m_bottom       = at(print.config().initial_layer_infill_speed);
-    }
-
-    // Returns 0 for anything the frame may not be taken on.
-    double speed(ExtrusionRole role) const
-    {
-        if (!anchor_timelapse_role_eligible(role))
-            return 0.;
-        switch (role) {
-        case erPerimeter: return m_inner_wall;
-        case erInternalInfill: return m_sparse;
-        case erSolidInfill: return m_solid;
-        case erTopSolidInfill: return m_top;
-        case erIroning: return m_ironing;
-        case erBottomSurface: return m_bottom;
-        case erGapFill: return m_gap;
-        case erSupportMaterial: return m_support;
-        case erSupportMaterialInterface: return m_support_intf;
-        default: return 0.;
-        }
-    }
-
-private:
-    double m_inner_wall{0}, m_sparse{0}, m_solid{0}, m_top{0};
-    double m_ironing{0}, m_gap{0}, m_support{0}, m_support_intf{0}, m_bottom{0};
-};
-
 } // namespace
 
 // ----------------------------------------------------------------------------
@@ -140,40 +101,8 @@ bool AnchorTimelapsePlanner::plan(const Print &print)
     m_valid       = false;
     m_prime_tower = false;
     m_max_drift   = 0.;
+    m_total_drift = 0.;
     m_coverage    = 0.;
-
-    // A real multi-filament prime tower answers the question outright: it is
-    // printed at the same XY on every layer and it is there to be sacrificed.
-    //
-    // print.has_wipe_tower() is also true for a single-filament print that only
-    // asks for a tower to service a "smooth" timelapse - there is no tool-change
-    // tower in that case and the G-code generator never builds a
-    // WipeTowerIntegration for it, so the frame could never be fired there.
-    // Require more than one extruder so those prints fall through to the grid
-    // search below instead of anchoring on a tower that will not be printed.
-    if (print.has_wipe_tower() && print.extruders().size() > 1) {
-        const PrintConfig &cfg   = print.config();
-        const int          plate = print.get_plate_index();
-        const double       x     = cfg.wipe_tower_x.get_at(plate);
-        const double       y     = cfg.wipe_tower_y.get_at(plate);
-        const double       w     = cfg.prime_tower_width.value;
-        const double       d     = print.wipe_tower_data(print.extruders().size()).depth;
-        const double       a     = Geometry::deg2rad(double(cfg.wipe_tower_rotation_angle.value));
-        // Centre of the tower footprint, rotated about the tower origin. The
-        // tower is emitted in plate coordinates, so the plate origin applies
-        // here the way it does in WipeTowerIntegration.
-        const Vec3d  plate_origin = print.get_plate_origin();
-        const double lx           = 0.5 * w;
-        const double ly           = 0.5 * (d > 0. ? d : w);
-        m_fixed_anchor = Vec2d(x + lx * std::cos(a) - ly * std::sin(a), y + lx * std::sin(a) + ly * std::cos(a)) +
-                         Vec2d(plate_origin.x(), plate_origin.y());
-        m_prime_tower  = true;
-        m_valid        = true;
-        m_coverage     = 1.;
-        BOOST_LOG_TRIVIAL(info) << "Anchor timelapse: anchored on the prime tower at " << m_fixed_anchor.x() << ", "
-                                << m_fixed_anchor.y();
-        return true;
-    }
 
     // ---- Layer table -------------------------------------------------------
     std::vector<double> zs;
@@ -196,63 +125,121 @@ bool AnchorTimelapsePlanner::plan(const Print &print)
     };
     const size_t n_layers = zs.size();
 
+    // A real multi-filament prime tower answers the question outright: it is
+    // printed at the same XY on every layer and it is there to be sacrificed.
+    //
+    // print.has_wipe_tower() is also true for a single-filament print that only
+    // asks for a tower to service a "smooth" timelapse - there is no tool-change
+    // tower in that case and the G-code generator never builds a
+    // WipeTowerIntegration for it, so the frame could never be fired there.
+    // Require more than one extruder so those prints fall through to the grid
+    // search below instead of anchoring on a tower that will not be printed.
+    if (print.has_wipe_tower() && print.extruders().size() > 1) {
+        const WipeTowerData &wtd = print.wipe_tower_data(print.extruders().size());
+        // The tower only exists while there are tool changes to service. A print
+        // that finishes in one colour stops building it well below the top, and
+        // an anchor on a tower that is not there any more is worse than no
+        // anchor at all: every layer above it fires wherever the toolpath
+        // happens to pass nearest. Take the tower only when it covers the print.
+        double tower_top = 0.;
+        for (const std::vector<WipeTower::ToolChangeResult> &layer_changes : wtd.tool_changes)
+            for (const WipeTower::ToolChangeResult &tcr : layer_changes)
+                tower_top = std::max(tower_top, double(tcr.print_z));
+
+        if (tower_top + Z_TOLERANCE >= zs.back()) {
+            const PrintConfig &cfg   = print.config();
+            const int          plate = print.get_plate_index();
+            const double       x     = cfg.wipe_tower_x.get_at(plate);
+            const double       y     = cfg.wipe_tower_y.get_at(plate);
+            const double       w     = cfg.prime_tower_width.value;
+            const double       d     = wtd.depth;
+            const double       a     = Geometry::deg2rad(double(cfg.wipe_tower_rotation_angle.value));
+            // Centre of the tower footprint, rotated about the tower origin. The
+            // tower is emitted in plate coordinates, so the plate origin applies
+            // here the way it does in WipeTowerIntegration.
+            const Vec3d  plate_origin = print.get_plate_origin();
+            const double lx           = 0.5 * w;
+            const double ly           = 0.5 * (d > 0. ? d : w);
+            m_fixed_anchor = Vec2d(x + lx * std::cos(a) - ly * std::sin(a), y + lx * std::sin(a) + ly * std::cos(a)) +
+                             Vec2d(plate_origin.x(), plate_origin.y());
+            m_prime_tower  = true;
+            m_valid        = true;
+            m_coverage     = 1.;
+            BOOST_LOG_TRIVIAL(info) << "Anchor timelapse: anchored on the prime tower at " << m_fixed_anchor.x() << ", "
+                                    << m_fixed_anchor.y();
+            return true;
+        }
+        BOOST_LOG_TRIVIAL(info) << "Anchor timelapse: the prime tower stops at " << tower_top << " mm of " << zs.back()
+                                << " mm, so it cannot hold the anchor for the whole print; searching the model instead.";
+    }
+
     // ---- Geometry walk -----------------------------------------------------
-    // `sink(layer_index, x_mm, y_mm, speed_mm_s)` receives every sample of every
-    // eligible extrusion. Two passes share this walk: the first builds the
-    // global coverage map, the second records per-layer detail for the
-    // surviving candidates only.
-    auto walk = [&print, &layer_index](auto &&sink) {
+    // `fn(layer_index, path, instance_shift)` receives every extrusion of the
+    // print. Cheap: it visits paths, it does not touch their points.
+    auto for_each_path = [&print, &layer_index](auto &&fn) {
         for (const PrintObject *object : print.objects()) {
-            const PrintObjectConfig &object_cfg = object->config();
             for (const PrintInstance &instance : object->instances()) {
                 const Vec2d shift = unscale(instance.shift.x(), instance.shift.y());
-
-                auto sample_path = [&sink, &shift](const ExtrusionPath &path, int li, double speed) {
-                    if (speed <= 0. || path.polyline.size() < 2)
-                        return;
-                    const Points &pts = path.polyline.points;
-                    for (size_t i = 1; i < pts.size(); ++i) {
-                        const Vec2d  a   = unscale(pts[i - 1].x(), pts[i - 1].y()) + shift;
-                        const Vec2d  b   = unscale(pts[i].x(), pts[i].y()) + shift;
-                        const double len = (b - a).norm();
-                        const int    n   = std::max(1, int(std::ceil(len / SAMPLE_MM)));
-                        for (int s = 0; s <= n; ++s) {
-                            const Vec2d p = a + (b - a) * (double(s) / double(n));
-                            sink(li, p.x(), p.y(), speed);
-                        }
-                    }
-                };
-
                 for (const Layer *layer : object->layers()) {
                     const int li = layer_index(layer->print_z);
                     for (const LayerRegion *region : layer->regions()) {
-                        const SpeedModel model(print, region->region().config(), object_cfg);
-                        auto             emit = [&](const ExtrusionPath &p) { sample_path(p, li, model.speed(p.role())); };
+                        auto emit = [&fn, li, &shift](const ExtrusionPath &p) { fn(li, p, shift); };
                         visit_paths(&region->perimeters, emit);
                         visit_paths(&region->fills, emit);
                     }
                 }
                 for (const SupportLayer *layer : object->support_layers()) {
-                    const int li = layer_index(layer->print_z);
-                    // Support has no region config; the object config carries its speeds.
-                    const SpeedModel model(print, print.default_region_config(), object_cfg);
-                    auto             emit = [&](const ExtrusionPath &p) { sample_path(p, li, model.speed(p.role())); };
+                    const int li   = layer_index(layer->print_z);
+                    auto      emit = [&fn, li, &shift](const ExtrusionPath &p) { fn(li, p, shift); };
                     visit_paths(&layer->support_fills, emit);
                 }
             }
         }
     };
 
+    // The best line each layer has to offer. An outer wall only becomes an
+    // anchor on a layer that prints nothing better, so this gate has to be
+    // settled for the whole layer before any of its extrusions can be scored.
+    std::vector<AnchorTimelapsePriority> layer_best(n_layers, AnchorTimelapsePriority::Forbidden);
+    for_each_path([&layer_best](int li, const ExtrusionPath &path, const Vec2d &) {
+        if (path.polyline.size() < 2)
+            return;
+        const AnchorTimelapsePriority prio = anchor_timelapse_role_priority(path.role());
+        if (prio > layer_best[li])
+            layer_best[li] = prio;
+    });
+
+    // `sink(layer_index, x_mm, y_mm)` receives every sample of every eligible
+    // extrusion. Two passes share this walk: the first builds the global
+    // coverage map, the second records per-layer detail for the surviving
+    // candidates only.
+    auto walk = [&for_each_path, &layer_best](auto &&sink) {
+        for_each_path([&sink, &layer_best](int li, const ExtrusionPath &path, const Vec2d &shift) {
+            if (path.polyline.size() < 2 || !anchor_timelapse_allowed(layer_best[li], anchor_timelapse_role_priority(path.role())))
+                return;
+            const Points &pts = path.polyline.points;
+            for (size_t i = 1; i < pts.size(); ++i) {
+                const Vec2d  a   = unscale(pts[i - 1].x(), pts[i - 1].y()) + shift;
+                const Vec2d  b   = unscale(pts[i].x(), pts[i].y()) + shift;
+                const double len = (b - a).norm();
+                const int    n   = std::max(1, int(std::ceil(len / SAMPLE_MM)));
+                for (int s = 0; s <= n; ++s) {
+                    const Vec2d p = a + (b - a) * (double(s) / double(n));
+                    sink(li, p.x(), p.y());
+                }
+            }
+        });
+    };
+
     // ---- Pass A: global coverage -------------------------------------------
     std::unordered_map<int64_t, CellAgg> cells;
     cells.reserve(4096);
-    walk([&cells](int li, double x, double y, double speed) {
+    walk([&cells](int li, double x, double y) {
         CellAgg &c = cells[cell_key(cell_of(x), cell_of(y))];
         if (c.last_layer != li) {
             c.last_layer = li;
             ++c.layers;
         }
-        c.min_speed = std::min(c.min_speed, float(speed));
         c.sx += x;
         c.sy += y;
         ++c.n;
@@ -265,32 +252,31 @@ bool AnchorTimelapsePlanner::plan(const Print &print)
     {
         int64_t  key;
         uint32_t layers;
-        float    min_speed;
         Vec2d    centre; // centre of mass of everything printed in the cell
     };
     std::vector<Cand> ranked;
     ranked.reserve(cells.size());
     for (const auto &kv : cells)
-        ranked.push_back(Cand{kv.first, kv.second.layers, kv.second.min_speed,
-                              Vec2d(kv.second.sx / kv.second.n, kv.second.sy / kv.second.n)});
+        ranked.push_back(Cand{kv.first, kv.second.layers, Vec2d(kv.second.sx / kv.second.n, kv.second.sy / kv.second.n)});
     std::sort(ranked.begin(), ranked.end(), [](const Cand &a, const Cand &b) {
         if (a.layers != b.layers)
             return a.layers > b.layers;
-        return a.min_speed < b.min_speed;
+        return a.key < b.key; // deterministic
     });
 
-    // Keep the shortlist spread out, so a print whose anchor has to drift still
-    // has somewhere to drift to instead of 64 neighbouring cells in one corner.
+    // First tier: keep the shortlist spread out, so a print whose anchor has to
+    // cross the plate has somewhere to cross to instead of a clump of
+    // neighbouring cells in one corner. Second tier: fill the rest with the best
+    // of what is left, which is where the anchor's own neighbours come from.
     std::vector<Cand> cand;
     cand.reserve(MAX_CANDIDATES);
-    const double min_sep = 4. * GRID_MM;
-    for (int relax = 0; relax < 2 && cand.size() < MAX_CANDIDATES; ++relax) {
+    for (int tier = 0; tier < 2 && cand.size() < MAX_CANDIDATES; ++tier) {
         for (const Cand &c : ranked) {
             if (cand.size() >= MAX_CANDIDATES)
                 break;
             bool taken = false;
             for (const Cand &k : cand) {
-                if (k.key == c.key || (relax == 0 && (k.centre - c.centre).norm() < min_sep)) {
+                if (k.key == c.key || (tier == 0 && (k.centre - c.centre).norm() < MIN_SEPARATION_MM)) {
                     taken = true;
                     break;
                 }
@@ -304,62 +290,109 @@ bool AnchorTimelapsePlanner::plan(const Print &print)
         return false;
 
     // ---- Pass C: per-layer detail for the shortlist ------------------------
-    // For each (layer, candidate) keep the slowest speed seen, and the sampled
-    // point nearest the cell's centre of mass. That point is on a real
-    // extrusion of that layer, and picking the same relative spot on every
-    // layer keeps the anchor as still as the geometry allows.
+    // For each (layer, candidate) record whether it has eligible material, and
+    // for each candidate one fixed anchor point: the sample nearest the cell's
+    // centre of mass anywhere in the print.
+    //
+    // The point is deliberately not chosen per layer. Two extrusions a
+    // millimetre apart can share a cell, and "nearest the centre of mass on this
+    // layer" flips between them as the geometry shifts; the frame follows,
+    // because the splice fires wherever the toolpath passes closest to the
+    // anchor. Breaking that tie once, for the whole print, is what makes the
+    // frame sit still.
     std::unordered_map<int64_t, uint32_t> cand_index;
     for (uint32_t k = 0; k < K; ++k)
         cand_index.emplace(cand[k].key, k);
 
     std::vector<uint8_t> present(n_layers * K, 0);
-    std::vector<float>   speed(n_layers * K, 0.f);
-    std::vector<Vec2d>   point(n_layers * K, Vec2d::Zero());
-    std::vector<double>  point_d2(n_layers * K, std::numeric_limits<double>::max());
-    walk([&](int li, double x, double y, double sp) {
+    std::vector<Vec2d>   anchor_pt(K, Vec2d::Zero());
+    std::vector<double>  anchor_d2(K, std::numeric_limits<double>::max());
+    walk([&](int li, double x, double y) {
         auto it = cand_index.find(cell_key(cell_of(x), cell_of(y)));
         if (it == cand_index.end())
             return;
-        const uint32_t k = it->second;
-        const size_t   i = size_t(li) * K + k;
-        if (!present[i] || sp < speed[i])
-            speed[i] = float(sp);
-        present[i]      = 1;
-        const Vec2d  p  = Vec2d(x, y);
-        const double d2 = (p - cand[k].centre).squaredNorm();
-        if (d2 < point_d2[i]) {
-            point_d2[i] = d2;
-            point[i]    = p;
+        const uint32_t k            = it->second;
+        present[size_t(li) * K + k] = 1;
+        const Vec2d  p              = Vec2d(x, y);
+        const double d2             = (p - cand[k].centre).squaredNorm();
+        if (d2 < anchor_d2[k]) {
+            anchor_d2[k] = d2;
+            anchor_pt[k] = p;
         }
     });
 
-    // Normalise the speed score across everything that survived.
-    float vmin = std::numeric_limits<float>::max(), vmax = 0.f;
-    for (size_t i = 0; i < speed.size(); ++i)
-        if (present[i]) {
-            vmin = std::min(vmin, speed[i]);
-            vmax = std::max(vmax, speed[i]);
+    // Order the shortlist by the longest unbroken stretch of layers it can hold
+    // the anchor for. Nothing below depends on the order except the tie-break in
+    // the dynamic program - and with no speed term left, ties are the normal
+    // case: every spot that has material scores exactly the same. Resolving them
+    // towards the tallest column is what keeps the anchor still.
+    {
+        std::vector<uint32_t> run(K, 0);
+        for (size_t k = 0; k < K; ++k) {
+            uint32_t cur = 0;
+            for (size_t li = 0; li < n_layers; ++li) {
+                cur      = present[li * K + k] ? cur + 1 : 0;
+                run[k] = std::max(run[k], cur);
+            }
         }
-    const float vspan = std::max(1e-3f, vmax - vmin);
+        std::vector<size_t> order(K);
+        std::iota(order.begin(), order.end(), size_t(0));
+        std::sort(order.begin(), order.end(), [&run, &cand](size_t a, size_t b) {
+            if (run[a] != run[b])
+                return run[a] > run[b];
+            if (cand[a].layers != cand[b].layers)
+                return cand[a].layers > cand[b].layers;
+            return cand[a].key < cand[b].key;
+        });
+
+        std::vector<Cand>    cand2(K);
+        std::vector<uint8_t> present2(n_layers * K, 0);
+        std::vector<Vec2d>   anchor_pt2(K, Vec2d::Zero());
+        for (size_t k = 0; k < K; ++k) {
+            const size_t src = order[k];
+            cand2[k]         = cand[src];
+            anchor_pt2[k]    = anchor_pt[src];
+            for (size_t li = 0; li < n_layers; ++li)
+                present2[li * K + k] = present[li * K + src];
+        }
+        cand      = std::move(cand2);
+        present   = std::move(present2);
+        anchor_pt = std::move(anchor_pt2);
+    }
 
     // ---- Dynamic program over the layers -----------------------------------
+    // The only things that cost anything are moving the anchor and firing a
+    // frame where there is no material, so the plan that comes out is the
+    // stillest one that stays on the print.
+    std::vector<double> dist(K * K);
+    for (size_t j = 0; j < K; ++j)
+        for (size_t k = 0; k < K; ++k)
+            dist[j * K + k] = (cand[j].centre - cand[k].centre).norm();
+
     std::vector<double>   dp(K, 0.), dp_prev(K, 0.);
     std::vector<uint16_t> back(n_layers * K, 0);
     for (size_t li = 0; li < n_layers; ++li) {
         for (size_t k = 0; k < K; ++k) {
             const size_t i    = li * K + k;
-            const double here = present[i] ? double((speed[i] - vmin) / vspan) : ABSENT_COST;
+            const double here = present[i] ? 0. : ABSENT_COST;
             if (li == 0) {
                 dp[k]   = here;
                 back[i] = uint16_t(k);
                 continue;
             }
-            double best = std::numeric_limits<double>::max();
+            // Staying put is always available and always free, so `best` is
+            // never left unset.
+            double best = dp_prev[k];
             size_t arg  = k;
             for (size_t j = 0; j < K; ++j) {
-                double c = dp_prev[j];
-                if (j != k)
-                    c += SWITCH_COST + DRIFT_COST_PER_MM * (cand[k].centre - cand[j].centre).norm();
+                if (j == k)
+                    continue;
+                const double d = dist[j * K + k];
+                // A step longer than the cap is only on the table when staying
+                // is not: the anchor's own spot has run out of material.
+                if (d > MAX_STEP_MM && present[li * K + j])
+                    continue;
+                const double c = dp_prev[j] + SWITCH_COST + DRIFT_COST_PER_MM * d;
                 if (c < best) {
                     best = c;
                     arg  = j;
@@ -384,20 +417,18 @@ bool AnchorTimelapsePlanner::plan(const Print &print)
 
     // ---- Materialise the anchors ------------------------------------------
     m_layers.resize(n_layers);
-    Vec2d  last     = cand[chosen.front()].centre;
+    Vec2d  last     = anchor_pt[chosen.front()];
     size_t with_mat = 0;
     for (size_t li = 0; li < n_layers; ++li) {
-        const size_t i = li * K + chosen[li];
-        Vec2d        pos;
-        if (present[i]) {
-            pos = point[i];
+        // The anchor of a cell does not move, so a layer with nothing eligible
+        // at the anchor holds its position by construction: the frame lands
+        // wherever that layer's toolpath passes closest to it.
+        const Vec2d pos = anchor_pt[chosen[li]];
+        if (present[li * K + chosen[li]])
             ++with_mat;
-        } else {
-            // Nothing eligible is printed at the anchor on this layer - hold the
-            // last one rather than jumping to the cell centre.
-            pos = last;
-        }
-        m_max_drift  = std::max(m_max_drift, (pos - last).norm());
+        const double step = (pos - last).norm();
+        m_max_drift       = std::max(m_max_drift, step);
+        m_total_drift += step;
         last         = pos;
         m_layers[li] = PlannedLayer{zs[li], pos};
     }
@@ -405,7 +436,8 @@ bool AnchorTimelapsePlanner::plan(const Print &print)
     m_valid    = true;
 
     BOOST_LOG_TRIVIAL(info) << "Anchor timelapse: planned " << n_layers << " layers from " << K << " candidate spots, coverage "
-                            << int(m_coverage * 100.) << "%, max drift " << m_max_drift << " mm";
+                            << int(m_coverage * 100.) << "%, max step " << m_max_drift << " mm, total travel " << m_total_drift
+                            << " mm";
     return true;
 }
 
@@ -439,17 +471,37 @@ std::string anchor_timelapse_insert_block(const std::string &layer_gcode,
     if (block.empty())
         return layer_gcode;
 
-    // Walk the layer's moves, tracking the toolhead XY, and remember the line
-    // boundary at which it comes closest to the anchor. The block goes there:
-    // no line is touched and nothing extra is travelled - the nozzle is already
-    // as near the anchor as this layer's toolpath ever gets.
+    // Walk the layer's moves, tracking the toolhead XY and the feature it is
+    // laying down, and remember the line boundary at which it comes closest to
+    // the anchor while extruding a line the frame is allowed on. The block goes
+    // there: no line is touched and nothing extra is travelled - the nozzle is
+    // already as near the anchor as this layer's toolpath ever gets.
+    //
+    // Boundaries are kept per priority, because whether an outer wall may be
+    // used is only known once the whole layer has been read.
+    const std::string &role_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role);
+
     GCodeReader reader;
     reader.x() = float(start_xy.x());
     reader.y() = float(start_xy.y());
 
-    double best_d2  = (start_xy - anchor).squaredNorm();
-    size_t best_off = 0; // byte offset to splice at; 0 == before the first line
-    auto   noop     = [](GCodeReader &, const GCodeReader::GCodeLine &) {};
+    constexpr size_t N_PRIO  = size_t(AnchorTimelapsePriority::Interior) + 1;
+    double           best_d2[N_PRIO];
+    size_t           best_off[N_PRIO];
+    for (size_t i = 0; i < N_PRIO; ++i) {
+        best_d2[i]  = std::numeric_limits<double>::max();
+        best_off[i] = 0;
+    }
+
+    AnchorTimelapsePriority prio      = AnchorTimelapsePriority::Forbidden;
+    bool                    extruding = false;
+    // A deretraction counts as extruding to the reader - it pushes filament -
+    // but it lays nothing down, and it sits at the end of the travel that
+    // preceded it. Require the move to actually go somewhere, or the frame ends
+    // up fired on a travel with the nozzle just arrived and nothing under it.
+    auto cb = [&extruding](GCodeReader &r, const GCodeReader::GCodeLine &l) {
+        extruding = l.extruding(r) && l.dist_XY(r) > 0.f;
+    };
 
     const char *const base = layer_gcode.c_str();
     const char       *p    = base;
@@ -457,24 +509,44 @@ std::string anchor_timelapse_insert_block(const std::string &layer_gcode,
     GCodeReader::GCodeLine gline;
     while (p < end) {
         gline.reset();
-        const char *next = reader.parse_line(p, end, gline, noop);
+        extruding = false;
+        // parse_line runs the callback before it applies the move, so `extruding`
+        // is decided against the position the line starts from, while reader
+        // holds the position it ends at once the call returns.
+        const char *next = reader.parse_line(p, end, gline, cb);
         if (next <= p) // defensive: never seen, but do not spin
             break;
-        const double d2 = (Vec2d(double(reader.x()), double(reader.y())) - anchor).squaredNorm();
-        if (d2 < best_d2) {
-            best_d2  = d2;
-            best_off = size_t(next - base);
+        const std::string_view comment = gline.comment();
+        if (comment.size() > role_tag.size() && comment.substr(0, role_tag.size()) == role_tag)
+            prio = anchor_timelapse_role_priority(ExtrusionEntity::string_to_role(comment.substr(role_tag.size())));
+        else if (extruding && prio != AnchorTimelapsePriority::Forbidden) {
+            const double d2 = (Vec2d(double(reader.x()), double(reader.y())) - anchor).squaredNorm();
+            const size_t t  = size_t(prio);
+            if (d2 < best_d2[t]) {
+                best_d2[t]  = d2;
+                best_off[t] = size_t(next - base);
+            }
         }
         p = next;
     }
 
+    // Best tier the layer actually offered. When it offered none - a layer that
+    // is all bridge, or has no extrusion at all - the block goes at the end of
+    // the layer, which is where traditional timelapse puts it.
+    size_t off = layer_gcode.size();
+    for (size_t t = N_PRIO; t-- > size_t(AnchorTimelapsePriority::ExternalWall);)
+        if (best_d2[t] != std::numeric_limits<double>::max()) {
+            off = best_off[t];
+            break;
+        }
+
     std::string out;
     out.reserve(layer_gcode.size() + block.size() + 1);
-    out.append(layer_gcode, 0, best_off);
-    if (best_off != 0 && out.back() != '\n')
+    out.append(layer_gcode, 0, off);
+    if (off != 0 && out.back() != '\n')
         out.push_back('\n');
     out.append(block);
-    out.append(layer_gcode, best_off, std::string::npos);
+    out.append(layer_gcode, off, std::string::npos);
     return out;
 }
 
