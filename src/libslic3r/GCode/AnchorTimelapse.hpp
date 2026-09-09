@@ -43,12 +43,13 @@ inline AnchorTimelapsePriority anchor_timelapse_role_priority(ExtrusionRole role
     case erOverhangPerimeter:
     case erBridgeInfill:
     case erInternalBridgeInfill:
-    // Not the object: present on one layer and gone on the next, or not a
-    // toolpath of the model at all.
+    // There on one layer and gone on the next, or not a toolpath of the print
+    // at all. The prime tower is deliberately not in this list: it is printed at
+    // a fixed XY on every layer and it is sacrificial, which is exactly what an
+    // anchor wants - see AnchorTimelapsePlanner::plan().
     case erNone:
     case erSkirt:
     case erBrim:
-    case erWipeTower:
     case erCustom:
     case erMixed: return AnchorTimelapsePriority::Forbidden;
     case erExternalPerimeter: return AnchorTimelapsePriority::ExternalWall;
@@ -70,9 +71,12 @@ inline bool anchor_timelapse_allowed(AnchorTimelapsePriority best_on_layer, Anch
 // same place on every frame.
 //
 // Selection rules, in order:
-//   * A prime tower, when the print has a real multi-filament one, is the anchor
-//     straight away. It is printed at a fixed XY on every layer and it is
-//     sacrificial, so no search is needed or wanted.
+//   * A prime tower, when the print has a real multi-filament one that reaches
+//     the top of the print, is the anchor straight away. It is printed at a
+//     fixed XY on every layer and it is sacrificial, so no search is needed or
+//     wanted. A tower that stops early - the print finishes in one colour, so
+//     there are no more tool changes to service - is not used at all: the layers
+//     above it would have no anchor.
 //   * Otherwise the eligible extrusions of the whole print are binned into a
 //     coarse XY grid, and a dynamic program over the layers picks one cell per
 //     layer. Its objective is the distance the anchor moves, plus a penalty for
@@ -83,9 +87,10 @@ inline bool anchor_timelapse_allowed(AnchorTimelapsePriority best_on_layer, Anch
 //     a layer where its own spot has run out of material. It creeps along the
 //     part; it crosses the plate only when the column it was on ends.
 //
-// Every anchor is a point that actually lies on an eligible extrusion of its own
-// layer, so the nozzle is guaranteed to pass through it while that layer is
-// printed.
+// A cell's anchor is one point, fixed for the whole print, that lies on an
+// eligible extrusion. The plan keeps the anchor on cells that have material on
+// the layer being printed, so the nozzle passes within a cell of it; the splice
+// then fires the frame at the toolpath's closest approach.
 //
 // Nothing here runs unless anchor timelapse is actually selected; the planning
 // happens once, at G-code export time, off the slicing path.
