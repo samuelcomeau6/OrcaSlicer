@@ -11,9 +11,12 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include "Widgets/ComboBox.hpp"
 #include "Widgets/CheckBox.hpp"
 #include "Widgets/TextInput.hpp"
+
+class wxStaticText;
 
 namespace Slic3r { namespace GUI {
 
@@ -121,6 +124,7 @@ public:
     wxBoxSizer *create_item_input(wxString title, wxString title2, wxWindow *parent, wxString tooltip, std::string param, std::function<void(wxString)> onchange = {});
     wxBoxSizer *create_camera_orbit_mult_input(wxString title, wxWindow *parent, wxString tooltip);
     wxBoxSizer *create_item_backup_input(wxString title, wxWindow *parent, wxString tooltip, std::string param);
+    wxBoxSizer *create_item_spoolman(wxWindow *parent);
     wxBoxSizer *create_item_multiple_combobox(
         wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string parama, std::vector<wxString> vlista, std::vector<wxString> vlistb);
     wxBoxSizer *create_item_switch(wxString title, wxWindow *parent, wxString tooltip, std::string param);
@@ -148,6 +152,9 @@ protected:
     void OnSelectRadio(wxMouseEvent &event);
 
 private:
+    // Background Spoolman connection tests hold a weak reference, so late answers are dropped once the dialog is gone.
+    std::shared_ptr<wxStaticText*> m_spoolman_status;
+
     std::tuple<wxBoxSizer*, ComboBox*> create_item_combobox_base(wxString title, wxWindow* parent, wxString tooltip, std::string param, std::vector<wxString> vlist, unsigned int current_index);
 };
 

@@ -566,6 +566,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "filament_colour",
         "filament_multi_colors",
         "filament_colour_mode",
+        "filament_colour_name",
+        "filament_spool_id",
         "default_filament_colour",
         "filament_diameter",
         "filament_density",
@@ -3468,6 +3470,19 @@ std::string Print::output_filename(const std::string &filename_base) const
     config.set_key_value("plate_name", new ConfigOptionString(get_plate_name()));
     config.set_key_value("plate_number", new ConfigOptionString(get_plate_number_formatted()));
     config.set_key_value("model_name", new ConfigOptionString(get_model_name()));
+
+    // Spoolman / colour-library data of the filaments this plate actually uses, joined with '-',
+    // e.g. "{input_filename_base}_spool{spool_ids}.gcode" -> "benchy_spool12-31.gcode".
+    std::string used_spool_ids;
+    std::string used_colour_names;
+    for (unsigned int extruder : this->extruders()) {
+        if (extruder < m_config.filament_spool_id.values.size() && m_config.filament_spool_id.values[extruder] > 0)
+            used_spool_ids += (used_spool_ids.empty() ? "" : "-") + std::to_string(m_config.filament_spool_id.values[extruder]);
+        if (extruder < m_config.filament_colour_name.values.size() && !m_config.filament_colour_name.values[extruder].empty())
+            used_colour_names += (used_colour_names.empty() ? "" : "-") + m_config.filament_colour_name.values[extruder];
+    }
+    config.set_key_value("spool_ids", new ConfigOptionString(used_spool_ids));
+    config.set_key_value("filament_colour_names", new ConfigOptionString(used_colour_names));
 
     return this->PrintBase::output_filename(m_config.filename_format.value, ".gcode", filename_base, &config);
 }

@@ -2714,12 +2714,22 @@ Sidebar::Sidebar(Plater *parent)
                 multi_colors->values.resize(target_count);
             if (color_modes)
                 color_modes->values.resize(target_count);
+            auto* colour_names = pb->project_config.option<ConfigOptionStrings>("filament_colour_name");
+            auto* spool_ids    = pb->project_config.option<ConfigOptionInts>("filament_spool_id");
+            if (colour_names)
+                colour_names->values.resize(target_count);
+            if (spool_ids)
+                spool_ids->values.resize(target_count, 0);
             for (size_t i = 0; i < 4 && i < cm.size(); ++i) {
                 colors_vec[i] = cm[i];
                 if (multi_colors)
                     multi_colors->values[i].clear();
                 if (color_modes)
                     color_modes->values[i] = 0;
+                if (colour_names)
+                    colour_names->values[i].clear();
+                if (spool_ids)
+                    spool_ids->values[i] = 0;
             }
 
             // Write before set_num_filaments so auto_generate sees the matched palette.
@@ -9351,8 +9361,16 @@ void Sidebar::show_sync_filament_dialog()
         ConfigOptionStrings* co = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
         ConfigOptionStrings* mco = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors");
         ConfigOptionInts*    cmo = preset_bundle->project_config.option<ConfigOptionInts>("filament_colour_mode");
+        ConfigOptionStrings* cno = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour_name");
+        ConfigOptionInts*    sio = preset_bundle->project_config.option<ConfigOptionInts>("filament_spool_id");
 
         for (size_t i = 0; i < effective_size; ++i) {
+            // The colour now comes from the printer, so any colour name / Spoolman spool no longer applies.
+            if (cno && i < cno->values.size())
+                cno->values[i].clear();
+            if (sio && i < sio->values.size())
+                sio->values[i] = 0;
+
             Preset* matched = resolve_filament_preset(preset_bundle, syncedData[i].m_name, syncedData[i].m_type);
             if (matched) {
                 preset_bundle->set_filament_preset(i, matched->name);
@@ -11720,6 +11738,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                     "filament_colour",
                                     "filament_multi_colors",
                                     "filament_colour_mode",
+                                    "filament_colour_name",
+                                    "filament_spool_id",
                                     "mixed_filament_definitions",
                                     "mixed_filament_gradient_mode",
                                     "mixed_filament_height_lower_bound",

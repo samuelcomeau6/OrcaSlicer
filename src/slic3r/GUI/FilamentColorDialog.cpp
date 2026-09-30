@@ -624,7 +624,10 @@ void FilamentColorDialog::BuildUi()
     MoreColorPanel* moreButton = new MoreColorPanel(card, wxSize(contentWidth, FromDIP(40)));
     moreButton->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&)
     {
-        OpenMoreColorDialog();
+        if (_otherColorsEndsModal)
+            EndModal(wxID_MORE);
+        else
+            OpenMoreColorDialog();
     });
     cardSizer->AddSpacer(FromDIP(20));
     cardSizer->Add(moreButton, 0, wxLEFT | wxRIGHT, contentMargin);
@@ -690,6 +693,13 @@ void FilamentColorDialog::BuildUi()
     UpdateRoundedShape();
     Layout();
     PlaceNearFilamentPanel();
+}
+
+std::string FilamentColorDialog::SelectionName() const
+{
+    if (_selectedSku.empty())
+        return {};
+    return GetSelectionDisplayName(_filament, _selection, _selectedSku, _languageCode);
 }
 
 void FilamentColorDialog::SelectFilamentColor(const FilamentColorItem& colorItem)

@@ -6008,12 +6008,20 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
                     oldFilamentMultiColors = multiColors->values;
                 if (ConfigOptionInts* modes = projectConfig.option<ConfigOptionInts>("filament_colour_mode"))
                     oldFilamentColourModes = modes->values;
+                std::vector<std::string> oldFilamentColourNames;
+                std::vector<int> oldFilamentSpoolIds;
+                if (ConfigOptionStrings* names = projectConfig.option<ConfigOptionStrings>("filament_colour_name"))
+                    oldFilamentColourNames = names->values;
+                if (ConfigOptionInts* spoolIds = projectConfig.option<ConfigOptionInts>("filament_spool_id"))
+                    oldFilamentSpoolIds = spoolIds->values;
 
                 std::vector<std::string> oldFilamentPresets = m_preset_bundle->filament_presets;
                 const size_t oldFilamentCount = oldFilamentPresets.size();
                 oldFilamentColors.resize(oldFilamentCount, "#26A69A");
                 oldFilamentMultiColors.resize(oldFilamentCount);
                 oldFilamentColourModes.resize(oldFilamentCount, 0);
+                oldFilamentColourNames.resize(oldFilamentCount);
+                oldFilamentSpoolIds.resize(oldFilamentCount, 0);
                 for (size_t i = 0; i < oldFilamentCount; ++i)
                 {
                     if (oldFilamentColors[i].empty())
@@ -6038,6 +6046,8 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
                 projectConfig.option<ConfigOptionStrings>("filament_colour")->values = oldFilamentColors;
                 projectConfig.option<ConfigOptionStrings>("filament_multi_colors", true)->values = oldFilamentMultiColors;
                 projectConfig.option<ConfigOptionInts>("filament_colour_mode", true)->values = oldFilamentColourModes;
+                projectConfig.option<ConfigOptionStrings>("filament_colour_name", true)->values = oldFilamentColourNames;
+                projectConfig.option<ConfigOptionInts>("filament_spool_id", true)->values = oldFilamentSpoolIds;
 
                 if (ConfigOptionFloats* flushMatrix = projectConfig.option<ConfigOptionFloats>("flush_volumes_matrix"))
                     flushMatrix->values = oldFlushVolumesMatrix;
@@ -6054,6 +6064,12 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
                 wxGetApp().app_config->set_printer_setting(preset_name, "filament_colors", filamentColors);
                 wxGetApp().app_config->set_printer_setting(preset_name, "filament_multi_colors", filamentMultiColors);
                 wxGetApp().app_config->set_printer_setting(preset_name, "filament_colour_mode", filamentColourModes);
+                std::vector<std::string> filamentSpoolIdStrings;
+                filamentSpoolIdStrings.reserve(oldFilamentSpoolIds.size());
+                for (const int spoolId : oldFilamentSpoolIds)
+                    filamentSpoolIdStrings.emplace_back(std::to_string(spoolId));
+                wxGetApp().app_config->set_printer_setting(preset_name, "filament_colour_names", boost::algorithm::join(oldFilamentColourNames, "|"));
+                wxGetApp().app_config->set_printer_setting(preset_name, "filament_spool_ids", boost::algorithm::join(filamentSpoolIdStrings, ","));
 
                 wxGetApp().plater()->sidebar().on_filaments_change(m_preset_bundle->filament_presets.size());
             } else {

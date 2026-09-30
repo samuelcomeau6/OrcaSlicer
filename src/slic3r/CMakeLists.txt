@@ -354,6 +354,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ObjColorDialog.hpp
     GUI/FilamentColorDialog.cpp
     GUI/FilamentColorDialog.hpp
+    GUI/SpoolmanDialog.cpp
+    GUI/SpoolmanDialog.hpp
     GUI/HexColourDialog.cpp
     GUI/HexColourDialog.hpp
     GUI/ObjectDataViewModel.cpp
@@ -647,6 +649,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/SerialMessageType.hpp
     Utils/SimplyPrint.cpp
     Utils/SimplyPrint.hpp
+    Utils/SpoolmanClient.cpp
+    Utils/SpoolmanClient.hpp
     Utils/TCPConsole.cpp
     Utils/TCPConsole.hpp
     Utils/UndoRedo.cpp

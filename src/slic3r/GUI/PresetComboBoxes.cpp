@@ -29,18 +29,21 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Color.hpp"
+#include "libslic3r/Spoolman.hpp"
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "FilamentColorUtils.hpp"
 #include "NotificationManager.hpp"
 #include "FilamentColorDialog.hpp"
+#include "SpoolmanDialog.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
 #include "Tab.hpp"
 #include "ConfigWizard.hpp"
 #include "../Utils/ASCIIFolding.hpp"
+#include "../Utils/SpoolmanClient.hpp"
 #include "../Utils/FixModelByWin10.hpp"
 #include "../Utils/UndoRedo.hpp"
 #include "../Utils/ColorSpaceConvert.hpp"
@@ -108,6 +111,21 @@ void ResizeInts(ConfigOptionInts* option, size_t size)
 {
     if (option != nullptr && option->values.size() < size)
         option->values.resize(size);
+}
+
+// Stages the colour name and Spoolman spool ID of one filament slot into new_config.
+// Every colour change goes through here so a stale spool never outlives a manual colour pick.
+void StageFilamentSpoolFields(const DynamicPrintConfig& config, DynamicPrintConfig& new_config, size_t index,
+                              const std::string& colourName, int spoolId)
+{
+    ConfigOptionStrings* colourNames = CloneStringOption(config, "filament_colour_name");
+    ConfigOptionInts* spoolIds = CloneIntOption(config, "filament_spool_id");
+    ResizeStrings(colourNames, index + 1);
+    ResizeInts(spoolIds, index + 1);
+    colourNames->values[index] = SanitizeFilamentColourName(colourName);
+    spoolIds->values[index] = std::max(0, spoolId);
+    new_config.set_key_value("filament_colour_name", colourNames);
+    new_config.set_key_value("filament_spool_id", spoolIds);
 }
 
 std::string FilamentBaseName(std::string name)
@@ -442,6 +460,7 @@ int PresetComboBox::update_ams_color()
         new_cfg.set_key_value("filament_multi_colors", filamentMultiColors);
         new_cfg.set_key_value("filament_colour_mode", filamentColourModes);
     }
+    StageFilamentSpoolFields(*cfg, new_cfg, index, {}, 0);
     cfg->apply(new_cfg);
     wxGetApp().plater()->on_config_change(new_cfg);
     //trigger the filament color changed
@@ -1052,14 +1071,14 @@ void PlaterPresetComboBox::ChangeExtruderColor()
     const Preset* currentPreset = m_collection != nullptr ? m_collection->find_preset(filamentPresetName, false, true) : nullptr;
     if (currentPreset == nullptr || !currentPreset->is_compatible)
     {
-        SelectLegacyFilamentColor();
+        SelectOtherFilamentColor();
         return;
     }
 
     const std::string filamentBaseName = FilamentBaseName(filamentPresetName);
     if (!IsSnapmakerFilamentName(filamentBaseName))
     {
-        SelectLegacyFilamentColor();
+        SelectOtherFilamentColor();
         return;
     }
 
@@ -1085,15 +1104,58 @@ void PlaterPresetComboBox::ChangeExtruderColor()
         const FilamentColorMode currentMode = FilamentColorModeFromConfig(currentModeValue);
         const FilamentColor currentColor = FilamentColor::FromMultiColors(currentMultiColors, currentMode, currentColorHex);
         FilamentColorDialog dialog(this, filament, currentColor);
+        // With Spoolman configured, "Other Colors" leads on to the Spoolman spools (and from there to the color wheel).
+        dialog.SetOtherColorsEndsModal(!ConfiguredSpoolmanUrl().empty());
 
-        if (dialog.ShowModal() == wxID_OK)
+        const int result = dialog.ShowModal();
+        if (result == wxID_OK)
         {
-            ApplyFilamentColor(dialog.Selection());
+            ApplyFilamentColor(dialog.Selection(), dialog.SelectionName());
+        }
+        else if (result == wxID_MORE)
+        {
+            SelectOtherFilamentColor();
         }
         return;
     }
 
-    SelectLegacyFilamentColor();
+    SelectOtherFilamentColor();
+}
+
+std::string PlaterPresetComboBox::ConfiguredSpoolmanUrl() const
+{
+    return wxGetApp().app_config != nullptr ? SpoolmanClient::ConfiguredUrl(*wxGetApp().app_config) : std::string();
+}
+
+void PlaterPresetComboBox::SelectOtherFilamentColor()
+{
+    const std::string spoolmanUrl = ConfiguredSpoolmanUrl();
+    if (spoolmanUrl.empty())
+    {
+        SelectLegacyFilamentColor();
+        return;
+    }
+
+    const DynamicPrintConfig& config = wxGetApp().preset_bundle->project_config;
+    const FilamentColor currentColor =
+        FilamentColorUtils::GetFilamentColorFromConfig(&config, static_cast<size_t>(m_filament_idx), "#26A69A");
+    // The spool list opens filtered to this slot's filament type (e.g. PLA).
+    std::string filamentType;
+    const Preset* preset = m_collection != nullptr ? m_collection->find_preset(CurrentFilamentPresetName(), false, true) : nullptr;
+    if (preset != nullptr && preset->config.has("filament_type"))
+        filamentType = preset->config.opt_string("filament_type", 0u);
+
+    SpoolmanDialog dialog(this, spoolmanUrl, filamentType, ConfigIntAt(config, "filament_spool_id", m_filament_idx), currentColor);
+    const int result = dialog.ShowModal();
+    if (result == wxID_OK)
+    {
+        const SpoolmanSpool& spool = dialog.Selection();
+        ApplyFilamentColor(spool.color.Empty() ? currentColor : spool.color, spool.colorName, spool.id);
+    }
+    else if (result == wxID_MORE)
+    {
+        SelectLegacyFilamentColor();
+    }
 }
 
 void PlaterPresetComboBox::SelectLegacyFilamentColor()
@@ -1135,7 +1197,7 @@ void PlaterPresetComboBox::SelectLegacyFilamentColor()
     ApplyFilamentColor(FilamentColor::FromMultiColors("", FilamentColorMode::Segment, selected_color));
 }
 
-void PlaterPresetComboBox::ApplyFilamentColor(const FilamentColor& colorData)
+void PlaterPresetComboBox::ApplyFilamentColor(const FilamentColor& colorData, const std::string& colourName, int spoolId)
 {
     if (m_filament_idx < 0 || wxGetApp().preset_bundle == nullptr)
         return;
@@ -1172,6 +1234,7 @@ void PlaterPresetComboBox::ApplyFilamentColor(const FilamentColor& colorData)
     new_config.set_key_value("filament_colour", filament_colors);
     new_config.set_key_value("filament_multi_colors", filament_multi_colors);
     new_config.set_key_value("filament_colour_mode", filament_colour_modes);
+    StageFilamentSpoolFields(*config, new_config, index, colourName, spoolId);
 
     config->apply(new_config);
     wxGetApp().plater()->update_project_dirty_from_presets();
@@ -1288,6 +1351,18 @@ void PlaterPresetComboBox::update()
                                                              filament_color, FilamentColorPickerBitmapSize(clr_picker));
         if (color_bitmap != nullptr)
             clr_picker->SetBitmap(*color_bitmap);
+
+        // Surface the colour name / Spoolman spool so the assignment is visible without opening the picker.
+        wxString picker_tooltip = _L("Click to select filament color");
+        const std::string colour_name = ConfigStringAt(m_preset_bundle->project_config, "filament_colour_name", m_filament_idx);
+        const int spool_id = ConfigIntAt(m_preset_bundle->project_config, "filament_spool_id", m_filament_idx);
+        if (spool_id > 0)
+            picker_tooltip = wxString::Format(_L("Spoolman spool #%d"), spool_id) +
+                             (colour_name.empty() ? wxString() : " - " + from_u8(colour_name)) + "\n" + picker_tooltip;
+        else if (!colour_name.empty())
+            picker_tooltip = from_u8(colour_name) + "\n" + picker_tooltip;
+        if (clr_picker->GetToolTipText() != picker_tooltip)
+            clr_picker->SetToolTip(picker_tooltip);
 #ifdef __WXOSX__
         clr_picker->SetLabel(clr_picker->GetLabel()); // Let setBezelStyle: be called
         clr_picker->Refresh();

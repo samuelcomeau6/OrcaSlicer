@@ -27,6 +27,7 @@ add_executable(${_TEST_NAME}_tests
     test_optimizers.cpp
     test_png_io.cpp
 	test_sswcp_protocol.cpp
+	test_spoolman.cpp
     test_indexed_triangle_set.cpp
 	TestMD5.cpp
     ../libnest2d/printer_parts.cpp

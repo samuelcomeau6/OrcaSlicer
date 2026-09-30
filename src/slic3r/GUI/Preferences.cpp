@@ -6,6 +6,10 @@
 #include "MsgDialog.hpp"
 #include "I18N.hpp"
 #include "libslic3r/AppConfig.hpp"
+#include "libslic3r/Spoolman.hpp"
+#include "../Utils/SpoolmanClient.hpp"
+#include "Widgets/Button.hpp"
+#include "Widgets/Label.hpp"
 #include <wx/language.h>
 #include <wx/notebook.h>
 #include "Notebook.hpp"
@@ -516,6 +520,84 @@ wxBoxSizer *PreferencesDialog::create_item_input(wxString title, wxString title2
     });
 
     return sizer_input;
+}
+
+wxBoxSizer *PreferencesDialog::create_item_spoolman(wxWindow *parent)
+{
+    const wxString tooltip = _L("Address of your Spoolman server, e.g. http://192.168.1.20:7912. "
+                                "When set, clicking a filament color offers the spools from Spoolman. Leave empty to disable.");
+
+    wxBoxSizer *sizer = new wxBoxSizer(wxVERTICAL);
+    wxBoxSizer *row   = new wxBoxSizer(wxHORIZONTAL);
+
+    auto title = new wxStaticText(parent, wxID_ANY, _L("Server address"));
+    title->SetForegroundColour(DESIGN_GRAY900_COLOR);
+    title->SetFont(::Label::Body_13);
+    title->SetToolTip(tooltip);
+
+    auto input = new ::TextInput(parent, wxEmptyString, wxEmptyString, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(240), -1),
+                                 wxTE_PROCESS_ENTER);
+    StateColor input_bg(std::pair<wxColour, int>(wxColour("#F0F0F1"), StateColor::Disabled), std::pair<wxColour, int>(*wxWHITE, StateColor::Enabled));
+    input->SetBackgroundColor(input_bg);
+    input->SetToolTip(tooltip);
+    input->GetTextCtrl()->SetHint("http://spoolman.local:7912");
+    input->GetTextCtrl()->SetValue(from_u8(app_config->get(SpoolmanClient::ConfigKey)));
+
+    auto test = new Button(parent, _L("Test connection"));
+    test->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+
+    auto status = new wxStaticText(parent, wxID_ANY, wxEmptyString);
+    status->SetFont(::Label::Body_12);
+    status->SetForegroundColour(DESIGN_GRAY600_COLOR);
+    m_spoolman_status = std::make_shared<wxStaticText *>(status);
+
+    auto save = [this, input]() {
+        const std::string value = into_u8(input->GetTextCtrl()->GetValue().Strip(wxString::both));
+        if (value != app_config->get(SpoolmanClient::ConfigKey)) {
+            app_config->set(SpoolmanClient::ConfigKey, value);
+            app_config->save();
+        }
+    };
+    input->GetTextCtrl()->Bind(wxEVT_TEXT_ENTER, [save](wxCommandEvent &e) { save(); e.Skip(); });
+    input->GetTextCtrl()->Bind(wxEVT_KILL_FOCUS, [save](wxFocusEvent &e) { save(); e.Skip(); });
+
+    test->Bind(wxEVT_BUTTON, [this, input, save](wxCommandEvent &) {
+        save();
+        wxStaticText *status_text = *m_spoolman_status;
+        const std::string url = NormalizeSpoolmanUrl(into_u8(input->GetTextCtrl()->GetValue()));
+        if (url.empty()) {
+            status_text->SetLabel(_L("Spoolman integration is disabled."));
+            return;
+        }
+        status_text->SetLabel(wxString::Format(_L("Connecting to %s..."), from_u8(url)));
+
+        // Callbacks arrive on the HTTP thread; format and touch the label on the GUI thread only.
+        std::weak_ptr<wxStaticText *> weak_status = m_spoolman_status;
+        auto report = [weak_status](bool ok, std::string detail) {
+            wxGetApp().CallAfter([weak_status, ok, detail]() {
+                std::shared_ptr<wxStaticText *> label = weak_status.lock();
+                if (!label)
+                    return;
+                if (!ok)
+                    (*label)->SetLabel(wxString::Format(_L("Connection failed: %s"), from_u8(detail)));
+                else if (detail.empty())
+                    (*label)->SetLabel(_L("Connected to Spoolman."));
+                else
+                    (*label)->SetLabel(wxString::Format(_L("Connected to Spoolman %s."), from_u8(detail)));
+                (*label)->GetParent()->Layout();
+            });
+        };
+        SpoolmanClient::FetchInfo(
+            url, [report](std::string version) { report(true, version); }, [report](std::string error) { report(false, error); });
+    });
+
+    row->Add(0, 0, 0, wxEXPAND | wxLEFT, 23);
+    row->Add(title, 0, wxALIGN_CENTER_VERTICAL | wxALL, 3);
+    row->Add(input, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(5));
+    row->Add(test, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
+    sizer->Add(row, 0);
+    sizer->Add(status, 0, wxLEFT | wxTOP, FromDIP(26));
+    return sizer;
 }
 
 wxBoxSizer *PreferencesDialog::create_camera_orbit_mult_input(wxString title, wxWindow *parent, wxString tooltip)
@@ -1323,6 +1405,9 @@ wxWindow* PreferencesDialog::create_general_page()
     auto item_backup  = create_item_checkbox(_L("Auto-Backup"), page,_L("Backup your project periodically for restoring from the occasional crash."), 50, "backup_switch");
     auto item_backup_interval = create_item_backup_input(_L("every"), page, _L("The period of backup in seconds."), "backup_interval");
 
+    auto title_spoolman = create_item_title(_L("Spoolman"), page, _L("Spoolman filament inventory"));
+    auto item_spoolman  = create_item_spoolman(page);
+
     //downloads
     auto title_downloads = create_item_title(_L("Downloads"), page, _L("Downloads"));
     auto item_downloads = create_item_downloads(page,50,"download_path");
@@ -1417,6 +1502,9 @@ wxWindow* PreferencesDialog::create_general_page()
     sizer_page->Add(item_gcodes_warning, 0, wxTOP, FromDIP(3));
     sizer_page->Add(item_backup, 0, wxTOP,FromDIP(3));
     item_backup->Add(item_backup_interval, 0, wxLEFT, 0);
+
+    sizer_page->Add(title_spoolman, 0, wxTOP | wxEXPAND, FromDIP(20));
+    sizer_page->Add(item_spoolman, 0, wxTOP, FromDIP(3));
 
     sizer_page->Add(title_downloads, 0, wxTOP| wxEXPAND, FromDIP(20));
     sizer_page->Add(item_downloads, 0, wxEXPAND, FromDIP(3));
