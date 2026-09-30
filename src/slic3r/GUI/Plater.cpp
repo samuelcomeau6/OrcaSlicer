@@ -1,4 +1,5 @@
 #include "Plater.hpp"
+#include "HexColourDialog.hpp"
 #include "MixedFilamentDialog.hpp"
 #include "MixedFilamentBatchDialog.hpp"
 #include "MixedGradientSelector.hpp"
@@ -1629,6 +1630,7 @@ public:
         hex_row->Add(m_hex_input, 1, wxALIGN_CENTER_VERTICAL);
         hex_row->AddSpacer(FromDIP(8));
         m_classic_picker = new wxColourPickerCtrl(this, wxID_ANY, safe_initial);
+        use_hex_colour_dialog(m_classic_picker);
         m_classic_picker->SetToolTip(_L("Classic color picker. The result will snap to the closest supported FilamentMixer color."));
         hex_row->Add(m_classic_picker, 0, wxALIGN_CENTER_VERTICAL);
         root->Add(hex_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));

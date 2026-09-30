@@ -1,4 +1,5 @@
 #include "AMSMaterialsSetting.hpp"
+#include "HexColourDialog.hpp"
 #include "ExtrusionCalibration.hpp"
 #include "MsgDialog.hpp"
 #include "GUI_App.hpp"
@@ -1570,7 +1571,7 @@ void ColorPickerPopup::on_custom_clr_picker(wxMouseEvent& event)
     for (int i = 0; i < colors.size(); i++) {
         m_clrData->SetCustomColour(i, string_to_wxColor(colors[i]));
     }
-    auto clr_dialog = new wxColourDialog(nullptr, m_clrData);
+    auto clr_dialog = new HexColourDialog(nullptr, m_clrData);
     wxColour picker_color;
 
     if (clr_dialog->ShowModal() == wxID_OK) {

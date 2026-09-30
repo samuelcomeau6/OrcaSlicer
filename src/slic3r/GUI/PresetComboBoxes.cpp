@@ -1,4 +1,5 @@
 #include "PresetComboBoxes.hpp"
+#include "HexColourDialog.hpp"
 
 #include <cstddef>
 #include <algorithm>
@@ -1117,7 +1118,7 @@ void PlaterPresetComboBox::SelectLegacyFilamentColor()
     for (int i = 0; i < custom_count; ++i)
         m_clrData.SetCustomColour(i, string_to_wxColor(custom_colors[i]));
 
-    wxColourDialog dialog(this, &m_clrData);
+    HexColourDialog dialog(this, &m_clrData);
     dialog.SetTitle(_L("Please choose the filament color"));
     if (dialog.ShowModal() != wxID_OK)
         return;
