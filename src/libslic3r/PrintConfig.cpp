@@ -2086,6 +2086,23 @@ void PrintConfigDef::init_fff_params()
     def->max = 1;
     def->set_default_value(new ConfigOptionInts{ 0 });
 
+    def = this->add("filament_colour_name", coStrings);
+    def->label = L("Filament color name");
+    def->tooltip = L("Human readable name of the filament color, taken from the Snapmaker color or Spoolman spool picked "
+                     "for this filament. Available as a placeholder, e.g. {filament_colour_name[0]}.");
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionStrings{ "" });
+
+    def = this->add("filament_spool_id", coInts);
+    def->label = L("Spoolman spool ID");
+    def->tooltip = L("ID of the Spoolman spool assigned to this filament, 0 when none. Available as a placeholder, "
+                     "e.g. SET_ACTIVE_SPOOL ID={filament_spool_id[initial_tool]} in the start G-code.");
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->min = 0;
+    def->set_default_value(new ConfigOptionInts{ 0 });
+
     def           = this->add("thumb0", coStrings);
     def->label    = L("small thumb");
     def->tooltip  = L("first small thumb");
@@ -6570,7 +6587,7 @@ void PrintConfigDef::init_filament_option_keys()
         "retraction_length", "z_hop", "z_hop_types", "retract_lift_above", "retract_lift_below", "retract_lift_enforce", "retraction_speed", "deretraction_speed",
         "retract_before_wipe", "retract_restart_extra", "retraction_minimum_travel", "wipe", "wipe_distance",
         "retract_when_changing_layer", "retract_length_toolchange", "retract_restart_extra_toolchange", "filament_colour",
-        "filament_multi_colors", "filament_colour_mode",
+        "filament_multi_colors", "filament_colour_mode", "filament_colour_name", "filament_spool_id",
         "default_filament_profile","retraction_distances_when_cut","long_retractions_when_cut"/*,"filament_seam_gap"*/
     };
 

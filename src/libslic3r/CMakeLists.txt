@@ -136,6 +136,8 @@ set(lisbslic3r_sources
     AllowlistManager.hpp
     FilamentColorLibrary.cpp
     FilamentColorLibrary.hpp
+    Spoolman.cpp
+    Spoolman.hpp
     FilamentHotBedNozzleRules.cpp
     FilamentHotBedNozzleRules.hpp
     Fill/Fill3DHoneycomb.cpp

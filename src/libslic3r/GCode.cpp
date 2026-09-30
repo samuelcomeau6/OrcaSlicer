@@ -2274,6 +2274,14 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
             (filament_diameter_list += m_config.filament_diameter.serialize()) += '\n';
             file.writeln(filament_diameter_list);
 
+            // Human readable colour names and Spoolman spools, so the print can be traced back to its spools.
+            const auto& colour_names = m_config.filament_colour_name.values;
+            const auto& spool_ids    = m_config.filament_spool_id.values;
+            if (std::any_of(colour_names.begin(), colour_names.end(), [](const std::string& name) { return !name.empty(); }))
+                file.writeln("; filament_colour_name: " + m_config.filament_colour_name.serialize() + '\n');
+            if (std::any_of(spool_ids.begin(), spool_ids.end(), [](int id) { return id > 0; }))
+                file.writeln("; filament_spool_id: " + m_config.filament_spool_id.serialize() + '\n');
+
             coordf_t max_height_z = -1;
             for (const auto& object : print.objects())
                 max_height_z = std::max(object->layers().back()->print_z, max_height_z);

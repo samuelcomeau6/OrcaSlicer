@@ -138,6 +138,10 @@ void EnsureFilamentColorFieldsAligned(DynamicPrintConfig &config)
         if (shouldRefreshMulti)
             multiColors->values[i] = filamentColor->values[i];
     }
+
+    // Spoolman / colour-library metadata follows the filament slots; new slots start unassigned.
+    config.option<ConfigOptionStrings>("filament_colour_name", true)->values.resize(targetCount);
+    config.option<ConfigOptionInts>("filament_spool_id", true)->values.resize(targetCount, 0);
 }
 
 void ApplyFilamentColors(DynamicPrintConfig &config, const std::vector<FilamentColor>& filamentColors)
@@ -160,6 +164,25 @@ void ApplyFilamentColors(DynamicPrintConfig &config, const std::vector<FilamentC
     config.option<ConfigOptionStrings>("filament_multi_colors", true)->values = multiColors;
     config.option<ConfigOptionInts>("filament_colour_mode", true)->values = modes;
     EnsureFilamentColorFieldsAligned(config);
+}
+
+// Restores the colour names and Spoolman spool IDs remembered for a printer by export_selections().
+void LoadFilamentSpoolAssignments(const AppConfig &config, const std::string &printerName, DynamicPrintConfig &projectConfig,
+                                  size_t targetCount)
+{
+    std::vector<std::string> names;
+    const std::string namesSetting = config.get_printer_setting(printerName, "filament_colour_names");
+    if (!namesSetting.empty())
+        boost::algorithm::split(names, namesSetting, boost::algorithm::is_any_of("|"));
+    names.resize(targetCount);
+
+    std::vector<int> spoolIds(targetCount, 0);
+    const std::vector<std::string> idValues = SplitPrinterSetting(config, printerName, "filament_spool_ids");
+    for (size_t i = 0; i < std::min(idValues.size(), targetCount); ++i)
+        spoolIds[i] = std::max(0, std::atoi(idValues[i].c_str()));
+
+    projectConfig.option<ConfigOptionStrings>("filament_colour_name", true)->values = names;
+    projectConfig.option<ConfigOptionInts>("filament_spool_id", true)->values = spoolIds;
 }
 
 void EraseStringOptionAt(DynamicPrintConfig &config, const std::string &key, size_t index)
@@ -187,6 +210,8 @@ void EraseFilamentColorFields(DynamicPrintConfig &config, size_t index)
 {
     EraseStringOptionAt(config, "filament_multi_colors", index);
     EraseIntOptionAt(config, "filament_colour_mode", index);
+    EraseStringOptionAt(config, "filament_colour_name", index);
+    EraseIntOptionAt(config, "filament_spool_id", index);
     EnsureFilamentColorFieldsAligned(config);
 }
 
@@ -205,6 +230,8 @@ static std::vector<std::string> s_project_options {
     "filament_colour",
     "filament_multi_colors",
     "filament_colour_mode",
+    "filament_colour_name",
+    "filament_spool_id",
     "wipe_tower_x",
     "wipe_tower_y",
     "wipe_tower_rotation_angle",
@@ -1877,6 +1904,7 @@ void PresetBundle::update_selections(AppConfig &config)
     std::vector<FilamentColor> filamentColors = LoadFilamentColors(config, initial_printer_profile_name,
                                                                     filament_presets.size());
     ApplyFilamentColors(project_config, filamentColors);
+    LoadFilamentSpoolAssignments(config, initial_printer_profile_name, project_config, filament_presets.size());
     EnsureFilamentVolumeTypesAligned(project_config, filament_presets.size());
     std::vector<std::string> matrix;
     if (config.has_printer_setting(initial_printer_profile_name, "flush_volumes_matrix")) {
@@ -2010,6 +2038,7 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
     std::vector<FilamentColor> filamentColors = LoadFilamentColors(config, initial_printer_profile_name,
                                                                     filament_presets.size());
     ApplyFilamentColors(project_config, filamentColors);
+    LoadFilamentSpoolAssignments(config, initial_printer_profile_name, project_config, filament_presets.size());
     EnsureFilamentVolumeTypesAligned(project_config, filament_presets.size());
     std::vector<std::string> matrix;
     if (config.has_printer_setting(initial_printer_profile_name, "flush_volumes_matrix")) {
@@ -2128,6 +2157,18 @@ void PresetBundle::export_selections(AppConfig &config)
     config.set_printer_setting(printer_name, "filament_colors", filamentColors);
     config.set_printer_setting(printer_name, "filament_multi_colors", filamentMultiColors);
     config.set_printer_setting(printer_name, "filament_colour_mode", filamentColourModes);
+
+    std::vector<std::string> filamentColourNames(filament_presets.size());
+    std::vector<std::string> filamentSpoolIds(filament_presets.size(), "0");
+    if (const ConfigOptionStrings *names = project_config.option<ConfigOptionStrings>("filament_colour_name"))
+        for (size_t i = 0; i < std::min(names->values.size(), filamentColourNames.size()); ++i)
+            filamentColourNames[i] = names->values[i];
+    if (const ConfigOptionInts *spoolIds = project_config.option<ConfigOptionInts>("filament_spool_id"))
+        for (size_t i = 0; i < std::min(spoolIds->values.size(), filamentSpoolIds.size()); ++i)
+            filamentSpoolIds[i] = std::to_string(spoolIds->values[i]);
+    config.set_printer_setting(printer_name, "filament_colour_names", boost::algorithm::join(filamentColourNames, "|"));
+    config.set_printer_setting(printer_name, "filament_spool_ids", boost::algorithm::join(filamentSpoolIds, ","));
+
     std::string flush_volumes_matrix = boost::algorithm::join(project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values |
                                                              boost::adaptors::transformed(static_cast<std::string (*)(double)>(std::to_string)),
                                                          "|");

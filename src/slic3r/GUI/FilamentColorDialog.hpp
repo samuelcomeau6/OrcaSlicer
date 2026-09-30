@@ -34,6 +34,20 @@ public:
         return _selection;
     }
 
+    /**
+     * @brief Gets the name of the selected official color, empty for custom colors.
+     */
+    std::string SelectionName() const;
+
+    /**
+     * @brief Makes "Other Colors" close the dialog with wxID_MORE instead of opening the color wheel,
+     * so the caller can offer further sources (e.g. Spoolman) first.
+     */
+    void SetOtherColorsEndsModal(bool endsModal)
+    {
+        _otherColorsEndsModal = endsModal;
+    }
+
 private:
     void BuildUi();
     void SelectFilamentColor(const FilamentColorItem& colorItem);
@@ -59,6 +73,7 @@ private:
     wxStaticBitmap* _previewBitmap { nullptr };
     wxStaticText* _nameLabel { nullptr };
     wxStaticText* _skuLabel { nullptr };
+    bool _otherColorsEndsModal { false };
     bool _dragPending { false };
     bool _isDragging { false };
     wxPoint _dragStartMouse;
