@@ -2,6 +2,7 @@
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "Field.hpp"
+#include "HexColourDialog.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "wxExtensions.hpp"
 #include "Plater.hpp"
@@ -2002,7 +2003,7 @@ void ColourPicker::on_button_click(wxCommandEvent &event) {
             m_clrData->SetCustomColour(i, string_to_wxColor(colors[i]));
         }
     }
-    m_picker_widget->OnButtonClick(event);
+    show_hex_colour_dialog(m_picker_widget);
 #endif
 }
 

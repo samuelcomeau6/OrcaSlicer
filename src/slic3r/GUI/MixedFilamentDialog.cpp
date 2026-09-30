@@ -1,4 +1,5 @@
 #include "MixedFilamentDialog.hpp"
+#include "HexColourDialog.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "MixedColorMatchHelpers.hpp"
@@ -429,7 +430,7 @@ void MixedFilamentDialog::build_ui()
         m_match_target_picker->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent&) {
             wxColourData data;
             data.SetColour(m_match_target_picker->GetBackgroundColour());
-            wxColourDialog dlg(this, &data);
+            HexColourDialog dlg(this, &data);
             if (dlg.ShowModal() == wxID_OK) {
                 wxColour c = dlg.GetColourData().GetColour();
                 if (c.IsOk()) {

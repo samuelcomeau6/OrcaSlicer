@@ -1,4 +1,5 @@
 #include "MixedColorMatchPanel.hpp"
+#include "HexColourDialog.hpp"
 #include "MixedColorMatchHelpers.hpp"
 #include "MixedFilamentColorMapPanel.hpp"
 #include "MixedGradientSelector.hpp"
@@ -210,6 +211,7 @@ MixedColorMatchPanel::MixedColorMatchPanel(wxWindow *parent,
     target_row->Add(m_hex_input, 0, wxALIGN_CENTER_VERTICAL);
     target_row->AddSpacer(FromDIP(6));
     m_classic_picker = new wxColourPickerCtrl(this, wxID_ANY, safe_initial);
+    use_hex_colour_dialog(m_classic_picker);
     m_classic_picker->SetToolTip(_L("Classic color picker."));
     target_row->Add(m_classic_picker, 0, wxALIGN_CENTER_VERTICAL);
     left_col->Add(target_row, 0, wxEXPAND);
