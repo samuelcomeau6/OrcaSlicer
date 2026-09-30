@@ -252,8 +252,12 @@ private:
     wxRect get_edit_btn_rect() const;
     wxRect get_dropdown_rect() const;
 
+    // Spoolman spools when a server is configured, otherwise (or on "Other Colors") the color wheel.
+    void SelectOtherFilamentColor();
+    std::string ConfiguredSpoolmanUrl() const;
     void SelectLegacyFilamentColor();
-    void ApplyFilamentColor(const FilamentColor& colorData);
+    // colourName and spoolId land in filament_colour_name / filament_spool_id; empty/0 clears them.
+    void ApplyFilamentColor(const FilamentColor& colorData, const std::string& colourName = {}, int spoolId = 0);
     std::string CurrentFilamentPresetName() const;
     std::string CurrentFilamentId() const;
 };
