@@ -750,8 +750,10 @@ void GCodeViewer::ObjectsCoG::reset()
 
 bool GCodeViewer::ObjectsCoG::is_object_extrusion(ExtrusionRole role)
 {
-    // Every role is listed and there is no default: a role added to ExtrusionRole later
-    // triggers a -Wswitch warning here instead of silently counting as part of the object.
+    // Every role is listed and there is no default case: a role added to ExtrusionRole
+    // later falls through to the final return and is left out of the markers until it is
+    // listed here, instead of silently counting as part of the object. (The build sets
+    // -Wno-switch, so the compiler does not flag the missing case.)
     switch (role)
     {
     // the material which stays in the part
