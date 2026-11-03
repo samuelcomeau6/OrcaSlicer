@@ -750,8 +750,23 @@ void GCodeViewer::ObjectsCoG::reset()
 
 bool GCodeViewer::ObjectsCoG::is_object_extrusion(ExtrusionRole role)
 {
+    // Every role is listed and there is no default: a role added to ExtrusionRole later
+    // triggers a -Wswitch warning here instead of silently counting as part of the object.
     switch (role)
     {
+    // the material which stays in the part
+    case erPerimeter:
+    case erExternalPerimeter:
+    case erOverhangPerimeter:
+    case erInternalInfill:
+    case erSolidInfill:
+    case erTopSolidInfill:
+    case erBottomSurface:
+    case erIroning:
+    case erBridgeInfill:
+    case erInternalBridgeInfill:
+    case erGapFill:
+        return true;
     // everything which is removed from the part before it is used, plus the
     // extrusions which do not belong to any object at all
     case erNone:
@@ -765,9 +780,8 @@ bool GCodeViewer::ObjectsCoG::is_object_extrusion(ExtrusionRole role)
     case erMixed:
     case erCount:
         return false;
-    default:
-        return true;
     }
+    return false;
 }
 
 int GCodeViewer::ObjectsCoG::region_at(const Vec3f& position, int hint) const
@@ -808,6 +822,7 @@ void GCodeViewer::ObjectsCoG::load(const GCodeProcessorResult& gcode_result, con
         return;
 
     // one region per printable instance on the plate
+    size_t instances_seen = 0;
     if (print != nullptr) {
         std::set<const ModelInstance*> processed_instances;
         for (const PrintObject* print_object : print->objects()) {
@@ -820,6 +835,7 @@ void GCodeViewer::ObjectsCoG::load(const GCodeProcessorResult& gcode_result, con
                 const ModelInstance* model_instance = print_instance.model_instance;
                 if (model_instance == nullptr || !processed_instances.insert(model_instance).second)
                     continue;
+                ++instances_seen;
 
                 Region region;
                 region.hull = model_object->convex_hull_2d(model_instance->get_matrix());
@@ -845,6 +861,14 @@ void GCodeViewer::ObjectsCoG::load(const GCodeProcessorResult& gcode_result, con
 
     // no print objects (standalone G-code file): fall back to a single marker for the whole plate
     const bool whole_plate = m_regions.empty();
+    if (whole_plate && instances_seen > 0) {
+        // the plate has objects but none of them gave a usable footprint (e.g. degenerate
+        // hulls): the per-object markers cannot be computed, say so instead of quietly
+        // showing a single marker as if a standalone G-code file was loaded
+        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__
+            << boost::format(": none of the %1% object instances on the plate has a usable footprint, "
+                             "falling back to a single center of gravity marker for the whole plate") % instances_seen;
+    }
     if (whole_plate) {
         Region region;
         region.name = _u8L("Whole plate");
