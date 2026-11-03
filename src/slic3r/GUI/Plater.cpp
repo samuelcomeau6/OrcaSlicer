@@ -11741,11 +11741,14 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                 // filament_colour_mode, so apply_only() leaves the previous project's values in place.
                                 // The filament panel draws filament_multi_colors first while the 3D view uses
                                 // filament_colour, so rebuild both from the imported colours to keep them in step.
-                                if (!imported_filament_colors.empty() && !config_loaded.has("filament_multi_colors")) {
-                                    preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors", true)->values =
-                                        imported_filament_colors;
-                                    preset_bundle->project_config.option<ConfigOptionInts>("filament_colour_mode", true)->values =
-                                        std::vector<int>(imported_filament_colors.size(), FilamentColorModeToConfig(FilamentColorMode::Segment));
+                                // Each key is rebuilt only when the file lacks it, so an imported value is never overwritten.
+                                if (!imported_filament_colors.empty()) {
+                                    if (!config_loaded.has("filament_multi_colors"))
+                                        preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors", true)->values =
+                                            imported_filament_colors;
+                                    if (!config_loaded.has("filament_colour_mode"))
+                                        preset_bundle->project_config.option<ConfigOptionInts>("filament_colour_mode", true)->values =
+                                            std::vector<int>(imported_filament_colors.size(), FilamentColorModeToConfig(FilamentColorMode::Segment));
                                 }
                                 if (current_num_filaments != desired_physical_filaments) {
                                     q->confirm_auto_generated_gradients(desired_physical_filaments);

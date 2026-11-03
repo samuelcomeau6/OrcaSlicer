@@ -1505,6 +1505,12 @@ void GLVolumeCollection::update_colors_by_extruder(const DynamicPrintConfig* con
             if (filamemts_opt == nullptr)
                 return;
             filament_colors = filamemts_opt->values;
+            // Include enabled mixed (virtual) filament colors so volume extruder IDs
+            // assigned to mixed rows render correctly.
+            if (!filament_colors.empty() && GUI::wxGetApp().preset_bundle != nullptr) {
+                const auto mixed_colors = GUI::wxGetApp().preset_bundle->mixed_filaments.display_colors();
+                filament_colors.insert(filament_colors.end(), mixed_colors.begin(), mixed_colors.end());
+            }
         }
         if (filament_colors.empty())
             return;
