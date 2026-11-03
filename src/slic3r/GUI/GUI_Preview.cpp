@@ -700,8 +700,8 @@ bool Preview::skip_toolpath_preview()
             [this, result_id](wxEvtHandler*) {
                 // Rebuild outside the notification's render pass.
                 CallAfter([this, result_id]() {
-                    if (m_gcode_result->id != result_id)
-                        return; // a newer slice replaced it
+                    if (m_gcode_result == nullptr || m_gcode_result->id != result_id)
+                        return; // a newer slice or another plate replaced it
                     m_forced_toolpath_result_id = result_id;
                     m_canvas->reset_gcode_toolpaths();
                     m_loaded_print = nullptr;

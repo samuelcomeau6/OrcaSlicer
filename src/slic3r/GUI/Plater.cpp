@@ -15236,6 +15236,11 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     // "Continue", so the preview is built if enough memory is free.
     if (memory_guard_dialog != nullptr)
         memory_guard_dialog->EndModal(wxID_YES);
+    // The slice is over (finished, stopped or failed): give TBB its threads
+    // back now rather than at the next slice, and make a guard callback still
+    // queued behind this event see that there is nothing left to ask about.
+    if (Print* print = background_process.fff_print())
+        print->release_memory_guard_throttle();
     //BBS:ignore cancel event for some special case
     if (m_ignore_event)
     {
@@ -21235,17 +21240,22 @@ bool Plater::reslice()
                     if (! print_ptr->memory_guard_throttled() || p->memory_guard_dialog != nullptr)
                         return; // slice already ended, or already asking
                     wxString msg = _L("Available system memory is critically low. Slicing continues on a single thread "
-                                      "to use less memory until you choose an option.")
-                        + "\n\n- "
-                        + _L("\"Continue\": finish slicing on a single thread (slower, uses the least memory). The preview is "
-                             "built if enough memory is free once slicing finishes.")
+                                      "to use less memory until you choose an option.");
+                    // Button names are translated once and reused in the text,
+                    // so the text always matches the buttons.
+                    const wxString label_continue = _L("Continue");
+                    const wxString label_gcode    = _L("Generate G-code Only");
+                    const wxString label_stop     = _L("Stop");
+                    msg += "\n\n- "
+                        + wxString::Format(_L("\"%s\": finish slicing on a single thread (slower, uses the least memory). The preview is "
+                                              "built if enough memory is free once slicing finishes."), label_continue)
                         + "\n- "
-                        + _L("\"Generate G-code Only\": finish slicing at full speed and skip the preview. You can load "
-                             "the preview afterwards from the notification.")
+                        + wxString::Format(_L("\"%s\": finish slicing at full speed and skip the preview. You can load "
+                                              "the preview afterwards from the notification."), label_gcode)
                         + "\n- "
-                        + _L("\"Stop\": stop slicing now.");
+                        + wxString::Format(_L("\"%s\": stop slicing now."), label_stop);
                     RichMessageDialog dlg(this, msg, _L("Memory Usage Warning"), wxYES_NO | wxCANCEL | wxICON_WARNING);
-                    dlg.SetYesNoCancelLabels(_L("Continue"), _L("Generate G-code Only"), _L("Stop"));
+                    dlg.SetYesNoCancelLabels(label_continue, label_gcode, label_stop);
                     p->memory_guard_dialog = &dlg;
                     const int answer = dlg.ShowModal();
                     p->memory_guard_dialog = nullptr;
@@ -21261,6 +21271,8 @@ bool Plater::reslice()
                         // Stop, or the dialog was closed: as before, anything
                         // but an explicit choice to go on stops slicing.
                         BOOST_LOG_TRIVIAL(warning) << "Memory guard: user chose Stop";
+                        // Unwind the cancelled slice at full speed.
+                        print_ptr->release_memory_guard_throttle();
                         if (! p->background_process.idle())
                             p->background_process.stop();
                     }
